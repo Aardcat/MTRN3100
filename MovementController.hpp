@@ -35,6 +35,8 @@ public:
         lastRPos = 0;
     }
 
+    // Updates current saved local and global coordinates based on given encoder readings (corresponding
+    // to left and right wheel) and given heading
     void update(float leftValue, float rightValue, float angleValue) {
         float delta_left_radians = ((leftValue - lastLPos) / COUNTS_PER_REV) * 2 * PI; 
         float delta_right_radians = ((rightValue - lastRPos) / COUNTS_PER_REV) * 2 * PI; 
@@ -76,18 +78,6 @@ public:
     int getCurrFacing() const { return currFacing; }
     int getCellX() const { return cellX; }
     int getCellY() const { return cellY; }
-
-    float signedDistanceToValue(float input, float target) const {
-        float remainder = fmod(input, target);
-
-        if (remainder > 90.0) {
-            remainder -= 180.0;
-        } else if (remainder < -90.0) {
-            remainder += 180.0;
-        }
-
-        return remainder;
-    }
 
 private:
     float x, y, localH;

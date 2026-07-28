@@ -20,16 +20,20 @@
 #define M2_ENC_A 3     
 #define M2_ENC_B 8
 
-// Front lidar enable pins
-#define TOF_FRONT_PIN  A3     //a0 is left lidar
+// Lidar enable pins
+#define TOF_FRONT_PIN  A3     
 #define TOF_LEFT_PIN A0
 #define TOF_RIGHT_PIN A1
 
-// constants
+// Wheel constants
 #define COUNTS_PER_REV 700.0f      
 #define WHEEL_DIAMETER_MM 32.0f    
 #define WHEEL_RADIUS_MM 16.0f
 #define WHEEL_TRACK_MM 84.0f  
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// PLEASE TUNE THESE PID VALUES!!!!!
+////////////////////////////////////////////////////////////////////////////////////////////////////
 
 // PID values for small heading adjustment
 #define KP_H            60
@@ -62,13 +66,13 @@
 #define RIGHT -90
 #define CELL_LENGTH 180
 
-// motor and encoder inverting
+// Motor and encoder inverting
 #define M1_MOTOR_INVERT true
 #define M2_MOTOR_INVERT false       
 #define M1_ENC_INVERT  false
 #define M2_ENC_INVERT  true 
 
-// 3.2 drive and stop 
+// 3.2 drive and stop (DO NOT NEED FOR REAL MICROMOUSE MAZE) 
 #define TARGET_MM          100.0f  // desired gap between robot FRONT and wall
 #define SENSOR_TO_FRONT_MM 0.0f    // MEASURE: mm the sensor face sits behind the front bumper
 #define STOP_TOL_MM        6.0f    // deadband so it rests within +/-5 mm
@@ -81,13 +85,17 @@
 MPU6050 mpu(Wire);
 mtrn3100::Motor motorL(M1_PWM, M1_DIR, M1_MOTOR_INVERT);
 mtrn3100::Motor motorR(M2_PWM, M2_DIR, M2_MOTOR_INVERT);
-mtrn3100::PIDController ControllerV(KP_V, KI_V, KD_V, TOLERANCE_FORWARD);
-mtrn3100::PIDController ControllerH(KP_H, KI_H, KD_H, TOLERANCE_TURNING);
-mtrn3100::PIDController ControllerW(KP_H, KI_H, KD_H, TOLERANCE_TURNING);
+mtrn3100::PIDController ControllerV(KP_V, KI_V, KD_V, TOLERANCE_FORWARD); // PID Controller for forward movement
+mtrn3100::PIDController ControllerH(KP_H, KI_H, KD_H, TOLERANCE_TURNING); // PID Controller for small heading adjustment
+mtrn3100::PIDController ControllerW(KP_H, KI_H, KD_H, TOLERANCE_TURNING); // PID Controller for stationary turns
 mtrn3100::Encoder encL(M1_ENC_A, M1_ENC_B, M1_ENC_INVERT);
 mtrn3100::Encoder encR(M2_ENC_A, M2_ENC_B, M2_ENC_INVERT);
 mtrn3100::MovementController MovementControl(WHEEL_RADIUS_MM, WHEEL_TRACK_MM);
-mtrn3100::Lidar lidar(TOF_FRONT_PIN, TOF_LEFT_PIN, TOF_RIGHT_PIN);
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+mtrn3100::Lidar lidar(TOF_FRONT_PIN, TOF_LEFT_PIN, TOF_RIGHT_PIN); // NEEDS TO BE CHANGED TO WORK WITH MULTIPLE LIDARS!!
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
 
 
 // Tiny wrappers so attachInterrupt() can reach the encoder objects.
@@ -116,14 +124,16 @@ float clamp(float value, float min, float max) {
     }
 }
 
-// given a target distance in mm, drive there while not deviating from straight line track
+// given a target distance in mm, drive there in a straight line while not deviating from 
+// straight line track
 void driveStraight(float distance) {
     encL.reset();
     encR.reset();
-    MovementControl.zero();
+    MovementControl.zero(); // Sets current position and heading as the origin and constructs a set of
+                            // local coordinates based on this position
     bool at_destination = false;
 
-    ControllerH.zeroAndSetTarget(0, 0);
+    ControllerH.zeroAndSetTarget(0, 0); // Target set as zero so that heading adjustment controller always tries to adjust back to correct heading
     ControllerV.zeroAndSetTarget(0, distance);
 
     delay(150);
@@ -132,6 +142,7 @@ void driveStraight(float distance) {
         mpu.update();
         MovementControl.update(encL.getCount(), encR.getCount(), mpu.getAngleZ());
 
+        // Updates local coordinates
         float curr_x = MovementControl.getX();
         float curr_y = MovementControl.getY();
         float curr_h = MovementControl.getLocalHDeg();
@@ -145,13 +156,19 @@ void driveStraight(float distance) {
         Serial.println(curr_h);
         */
 
-        float adjustment_speed = 0;
+        float adjustment_speed = 0; // default (L/R) adjustment speed should be zero
         float base_speed = clamp(ControllerV.compute(curr_x), MIN_PWM, MAX_PWM);
         float leftPWM;
         float rightPWM;
 
         // The following block of if statements will tell the robot to adjust the speed of its wheels by a PWM adjustment factor,
         // based on if it is drifting left or right of its designated track (will be corrected first) or if it is pointing off the centerline.
+        // Note that whenever adjustment is happening, the base speed is reduced to 70% of it's maximum (this is partly the reason for
+        // the robot's low speed):
+
+        ////////////////////////////////////////////////////////////////////////////////////////////////////
+        // please tune the PID better than I did so that you don't need this 30% reduction!!!
+        ////////////////////////////////////////////////////////////////////////////////////////////////////
         if (curr_y > TOLERANCE_SIDEWAYS) {
             // drifted too far left
             adjustment_speed = fabs(clamp(ControllerH.compute(curr_y), MIN_PWM, MAX_ADJUSTMENT_PWM));
@@ -186,6 +203,10 @@ void driveStraight(float distance) {
             rightPWM = base_speed;
         }
         
+        ////////////////////////////////////////////////////////////////////////////////////////////////////
+        // NEED TO IMPLEMENT: a filter for the robot to tell whether it is at its final position, instead
+        // of just relying on seeing whenever it hits zero speed
+        ////////////////////////////////////////////////////////////////////////////////////////////////////
         if (base_speed == 0) {
             motorL.stop();
             motorR.stop();
@@ -200,7 +221,7 @@ void driveStraight(float distance) {
             */
         }
         
-        at_destination = base_speed == 0;
+        at_destination = base_speed == 0; // Same as above, this should be changed to work with a filter
     }
 
     motorL.stop();
@@ -213,7 +234,7 @@ void driveStraight(float distance) {
 void turn(float heading, bool global) {
     encL.reset();
     encR.reset();
-    MovementControl.zero();
+    MovementControl.zero(); // Same as the function for moving forward, sets local origin at it's current pos
     bool at_destination = false;
 
     ControllerW.zeroAndSetTarget(0, heading);
@@ -229,6 +250,9 @@ void turn(float heading, bool global) {
         mpu.update();
         MovementControl.update(encL.getCount(), encR.getCount(), mpu.getAngleZ());
         float curr_h;
+
+        // Tells the controller to either use global (raw data from IMU) or local heading (based on the
+        // local origin point set at the start of this movement)
         if (global) {
             curr_h = MovementControl.getHDeg();
         } else {
@@ -241,6 +265,10 @@ void turn(float heading, bool global) {
         motorL.setPWM(-speed);
         motorR.setPWM(speed);
 
+        ////////////////////////////////////////////////////////////////////////////////////////////////////
+        // Same as for the driving function, need to implement a filter here to check when it has 
+        // reached it's destination
+        ////////////////////////////////////////////////////////////////////////////////////////////////////
         at_destination = (speed == 0);
     }
 
@@ -248,18 +276,10 @@ void turn(float heading, bool global) {
     motorR.stop();
     mpu.update();
     MovementControl.update(encL.getCount(), encR.getCount(), mpu.getAngleZ());
-
-    float end_x = MovementControl.getGlobalX();
-    float end_y = MovementControl.getGlobalY();
-
-    //MovementControl.setGlobalX(start_x);
-    //MovementControl.setGlobalY(start_y);
-    Serial.print("turn end x is ");
-    Serial.println(MovementControl.getGlobalX());
-    Serial.print("turn end y is ");
-    Serial.println(MovementControl.getGlobalY());
 }
 
+// Calculates straight line path given an x and y global coordinate, turns towards the destination, 
+// then drives there using the driveStraight function.
 void driveToGlobalCoordinates(float x, float y) {
     mpu.update();
     MovementControl.update(encL.getCount(), encR.getCount(), mpu.getAngleZ());
@@ -289,7 +309,7 @@ void driveToGlobalCoordinates(float x, float y) {
     Serial.print("heading is ");
     Serial.println(heading);
 
-    turn(heading, true);
+    turn(heading, true); // Turns to face the desired destination
 
     delay(100);
 
@@ -301,6 +321,11 @@ void driveToGlobalCoordinates(float x, float y) {
     Serial.println(MovementControl.getGlobalY());
 }
 
+// Executes a given string of commands where 'l' = left turn (90 degree turn), 'r' = right turn 
+// (-90 degree turn), and 'f' = forward (drive straight 180mm i.e. one cell length)
+// Uses CellX and CellY in the movementcontroller class -> these tell the robot it's x and y 
+// coordinate within the current maze cell that it's in. Used for updating the direction it's 
+// currently facing a bit easier. (only used within this function)
 void movementChain(const String &commands) {
     MovementControl.setCurrFacing(FORWARD);
     MovementControl.setCellX(0);
@@ -311,6 +336,7 @@ void movementChain(const String &commands) {
         Serial.println("Executing command...");
 
         if (commands[i] == 'f') {
+            // Driving forward
             Serial.println("Driving forward!");
 
             if (MovementControl.getCurrFacing() == FORWARD) {
@@ -324,8 +350,8 @@ void movementChain(const String &commands) {
             }
 
             driveToGlobalCoordinates(MovementControl.getCellX(), MovementControl.getCellY());
-
         } else if (commands[i] == 'l') {
+            // Turning left
             Serial.println("Turning left!");
             
             if (MovementControl.getCurrFacing() == FORWARD) {
@@ -338,13 +364,9 @@ void movementChain(const String &commands) {
                 MovementControl.setCurrFacing(FORWARD);
             }
             
-            //Serial.println(MovementControl.getCurrFacing());
             turn(90, false);
-
-
-            //turn(MovementControl.getCurrFacing(), true);
-
         } else if (commands[i] == 'r') {
+            // Turning right
             Serial.println("Turning right!");
 
             if (MovementControl.getCurrFacing() == FORWARD) {
@@ -357,12 +379,7 @@ void movementChain(const String &commands) {
                 MovementControl.setCurrFacing(FORWARD);
             }
 
-            //Serial.println(MovementControl.getCurrFacing());
             turn(-90, false);
-
-            
-            //turn(MovementControl.getCurrFacing(), false);
-
         }
 
         Serial.println("Action executed.");
@@ -371,6 +388,14 @@ void movementChain(const String &commands) {
     }
 }
 
+// Taken straight from Rey's code for the week 8 task (for lidar portion)
+// You can take bits from this code to make your own lidar code (my idea for lidar is that it can
+// be used inside the maze to correct IMU drift - so like maybe when the robot detects that it has a wall
+// on both its left and right, it should try and have the left and right lidar distances be the same, because
+// this would mean that it's in the middle of the cell -> or something, you guys can figure this out lol)
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// i.e. please implement lidar as part of the robot
+////////////////////////////////////////////////////////////////////////////////////////////////////
 void driveAndStop() {
     Serial.println("Drive & stop: holding 100 mm from wall (runs continuously).");
     unsigned long t = 0;
@@ -412,14 +437,15 @@ void setup() {
     attachInterrupt(digitalPinToInterrupt(M1_ENC_A), isrL, RISING);
     attachInterrupt(digitalPinToInterrupt(M2_ENC_A), isrR, RISING);
 
-    //Serial.begin(115200);
+    //Serial.begin(115200); // I never figured out how to have two baud rates concurrently (don't think you can?)
+    // So the IMU is running at 9600 baud making it update not as quickly (not too big of an issue)
     Wire.begin();
 
     //Set up the IMU
     byte status = mpu.begin();
     Serial.print(F("MPU6050 status: "));
     Serial.println(status);
-    while(status!=0){ } // stop everything if could not connect to MPU6050
+    while(status!=0){ } 
     
     Serial.println(F("Calculating offsets, do not move MPU6050"));
     delay(1000);
@@ -433,7 +459,12 @@ void setup() {
     motorR.stop();
 
 
-    delay(START_DELAY);             // place robot on the line, then step away
+    delay(START_DELAY);
+
+    ////////////////////////////////////////////////////////////////////////////////////////////////////
+    // Below tasks are from week 8, we don't need the first few but please try implement the maze
+    // driving code using the chaining movements code from week 8
+    ////////////////////////////////////////////////////////////////////////////////////////////////////
 
     // Task 1 - straight line
     /*
@@ -445,7 +476,7 @@ void setup() {
     //driveAndStop();
 
     // Task 3 - Turning
-    
+    /*
     turn(-90, true);
     unsigned long start_time = millis();
     unsigned long delay_time = 7000;
@@ -455,15 +486,12 @@ void setup() {
         Serial.println(MovementControl.getHDeg());
     }
     turn(-88, true);
-    
+    */
 
     // Task 4 - Chaining Movements
-    /*
+    
     String commands = "lfrfffrf";
     movementChain(commands);
-    */
 }
 
-void loop() {
-    // Sequence runs once in setup(); nothing to repeat here.
-}
+void loop() {}
