@@ -17,7 +17,7 @@
 
 #include <Arduino.h>
 
-#define MAX_PWM 80
+        #define MAX_PWM 150 // this change makes its smoother
 
 namespace mtrn3100 {
 
