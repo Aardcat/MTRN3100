@@ -1,7 +1,6 @@
 #include "Motor.hpp"
 #include "Encoder.hpp"
 #include "PIDControl.hpp"
-#include "BangBangControl.hpp"
 #include "MovementController.hpp"
 #include "Lidar.hpp"
 #include "Wire.h"
@@ -33,23 +32,36 @@
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 // PLEASE TUNE THESE PID VALUES!!!!!
+//base case
+// // // PID values for small heading adjustment
+// #define KP_H            100
+// #define KI_H            0
+// #define KD_H            8
+// // PID values for forward speed control
+// #define KP_V            80
+// #define KI_V            0  
+// #define KD_V            10
+// // PID values for turning speed control
+// #define KP_W            180
+// #define KI_W            5  
+// #define KD_W            10
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-// PID values for small heading adjustment
-#define KP_H            60
+// // PID values for small heading adjustment
+#define KP_H            20
 #define KI_H            0  
-#define KD_H            8
+#define KD_H            0
 // PID values for forward speed control
-#define KP_V            80
-#define KI_V            0  
-#define KD_V            10
-// PID values for turning speed control
-#define KP_W            180
-#define KI_W            5  
-#define KD_W            10
+#define KP_V            84 //seems to be withing 80-85
+#define KI_V            2
+#define KD_V            8
+// PID values for turn  ing speed control
+#define KP_W            25
+#define KI_W            0 
+#define KD_W            1
 
 // Tolerances, maximums and minimums
-#define TOLERANCE_FORWARD    10     // tolerance (mm)
+#define TOLERANCE_FORWARD    5     // tolerance (mm)
 #define TOLERANCE_SIDEWAYS   5      // tolerance (mm)
 #define TOLERANCE_TURNING    2.5f      // tolerance (degrees)
 #define SETTLE_MS     250    // must stay within tolerance this long to finish
@@ -87,7 +99,7 @@ mtrn3100::Motor motorL(M1_PWM, M1_DIR, M1_MOTOR_INVERT);
 mtrn3100::Motor motorR(M2_PWM, M2_DIR, M2_MOTOR_INVERT);
 mtrn3100::PIDController ControllerV(KP_V, KI_V, KD_V, TOLERANCE_FORWARD); // PID Controller for forward movement
 mtrn3100::PIDController ControllerH(KP_H, KI_H, KD_H, TOLERANCE_TURNING); // PID Controller for small heading adjustment
-mtrn3100::PIDController ControllerW(KP_H, KI_H, KD_H, TOLERANCE_TURNING); // PID Controller for stationary turns
+mtrn3100::PIDController ControllerW(KP_W, KI_W, KD_W, TOLERANCE_TURNING); // PID Controller for stationary turns
 mtrn3100::Encoder encL(M1_ENC_A, M1_ENC_B, M1_ENC_INVERT);
 mtrn3100::Encoder encR(M2_ENC_A, M2_ENC_B, M2_ENC_INVERT);
 mtrn3100::MovementController MovementControl(WHEEL_RADIUS_MM, WHEEL_TRACK_MM);
@@ -127,16 +139,16 @@ float clamp(float value, float min, float max) {
 // given a target distance in mm, drive there in a straight line while not deviating from 
 // straight line track
 void driveStraight(float distance) {
-    encL.reset();
-    encR.reset();
-    MovementControl.zero(); // Sets current position and heading as the origin and constructs a set of
+    MovementControl.zero();
+
+     // Sets current position and heading as the origin and constructs a set of
                             // local coordinates based on this position
     bool at_destination = false;
 
     ControllerH.zeroAndSetTarget(0, 0); // Target set as zero so that heading adjustment controller always tries to adjust back to correct heading
     ControllerV.zeroAndSetTarget(0, distance);
 
-    delay(150);
+    // delay(150);
 
     while (!at_destination) {
         mpu.update();
@@ -147,14 +159,25 @@ void driveStraight(float distance) {
         float curr_y = MovementControl.getY();
         float curr_h = MovementControl.getLocalHDeg();
         
-        /*
-        Serial.print("curr_x is: ");
-        Serial.println(curr_x);
-        Serial.print("curr_y is: ");
-        Serial.println(curr_y);
-        Serial.print("curr_h is: ");
-        Serial.println(curr_h);
-        */
+        
+        // Serial.print("curr_x is: ");
+        // Serial.println(curr_x);
+        // Serial.print("curr_y is: ");
+        // Serial.println(curr_y);
+        // Serial.print("curr_h is: ");
+        // Serial.println(curr_h);
+ //pid testing       
+// Serial.print("V_Error:");
+// Serial.print(ControllerV.getError());
+
+// Serial.print(", H_Error:");
+// Serial.print(ControllerH.getError());
+
+// Serial.print(", X:");
+// Serial.print(curr_x);
+
+// Serial.print(", Y:");
+// Serial.println(curr_y);
 
         float adjustment_speed = 0; // default (L/R) adjustment speed should be zero
         float base_speed = clamp(ControllerV.compute(curr_x), MIN_PWM, MAX_PWM);
@@ -230,6 +253,18 @@ void driveStraight(float distance) {
     MovementControl.update(encL.getCount(), encR.getCount(), mpu.getAngleZ());
 }
 
+float wrapAngle(float angle) {
+    while (angle > 180.0f) {
+        angle -= 360.0f;
+    }
+
+    while (angle < -180.0f) {
+        angle += 360.0f;
+    }
+
+    return angle;
+}
+
 // turn to a target (local or global) heading (in degrees)
 void turn(float heading, bool global) {
     encL.reset();
@@ -254,14 +289,30 @@ void turn(float heading, bool global) {
         // Tells the controller to either use global (raw data from IMU) or local heading (based on the
         // local origin point set at the start of this movement)
         if (global) {
-            curr_h = MovementControl.getHDeg();
+            curr_h = wrapAngle(MovementControl.getHDeg());
         } else {
-            curr_h = MovementControl.getLocalHDeg();
+            curr_h = wrapAngle(MovementControl.getLocalHDeg());
         }
         float speed = clamp(ControllerW.compute(curr_h), MIN_PWM, MAX_PWM);
 
         //Serial.println(curr_h);
-     
+     static unsigned long lastPrint = 0;
+
+if (millis() - lastPrint >= 100) {
+    lastPrint = millis();
+
+// Serial.print("Target:");
+// Serial.print(heading);
+
+// Serial.print(", Raw local:");
+// Serial.print(MovementControl.getLocalHDeg());
+
+// Serial.print(", Wrapped:");
+// Serial.println(curr_h);
+
+//     Serial.print(", Output:");
+//     Serial.println(speed);
+}
         motorL.setPWM(-speed);
         motorR.setPWM(speed);
 
@@ -311,7 +362,7 @@ void driveToGlobalCoordinates(float x, float y) {
 
     turn(heading, true); // Turns to face the desired destination
 
-    delay(100);
+    // delay(100);
 
     driveStraight(distance);
 
@@ -383,7 +434,7 @@ void movementChain(const String &commands) {
         }
 
         Serial.println("Action executed.");
-        delay(150);
+        // delay(150);
         i++;
     }
 }
@@ -445,7 +496,7 @@ void setup() {
     byte status = mpu.begin();
     Serial.print(F("MPU6050 status: "));
     Serial.println(status);
-    while(status!=0){ } 
+    // while(status!=0){ } 
     
     Serial.println(F("Calculating offsets, do not move MPU6050"));
     delay(1000);
@@ -490,8 +541,9 @@ void setup() {
 
     // Task 4 - Chaining Movements
     
-    String commands = "lfrfffrf";
+    String commands = "fffrflfrfrflflfrfrflfrfffffrfff";
     movementChain(commands);
 }
 
 void loop() {}
+
