@@ -154,12 +154,13 @@ void driveStraight(float distance) {
     MovementControl.zero(); // Sets current position and heading as the origin and constructs a set of
                             // local coordinates based on this position
     bool at_destination = false;
+    uint32_t settle_start = 0;
 
     ControllerH.zeroAndSetTarget(0, 0); // Target set as zero so that heading adjustment controller always tries to adjust back to correct heading
     ControllerV.zeroAndSetTarget(0, distance);
 
     delay(150);
-
+    
     while (!at_destination) {
         mpu.update();
         MovementControl.update(encL.getCount(), encR.getCount(), mpu.getAngleZ());
@@ -234,9 +235,7 @@ void driveStraight(float distance) {
         }
         */
         
-        uint32_t settle_start = 0;
-
-        if (abs(ControllerW.getError() <= TOLERANCE_FORWARD)) {
+        if (abs(ControllerV.getError()) <= TOLERANCE_FORWARD) {
             motorL.stop();
             motorR.stop();
             if (settle_start == 0) {
@@ -299,7 +298,7 @@ void turn(float heading, bool global) {
         float local_heading = MovementControl.getLocalHDeg();
         float speed = ControllerW.compute(local_heading);
 
-        if (abs(ControllerW.getError() <= TOLERANCE_TURNING)) {
+        if (abs(ControllerW.getError()) <= TOLERANCE_TURNING) {
             motorL.stop();
             motorR.stop();
             if (settle_start == 0) {
@@ -388,7 +387,7 @@ void movementChain(const String &commands) {
             while (i + straight_count < commands.length() && commands[i + straight_count] == 'f') {
                 straight_count++;
             }
-            float distance = straight_count * CELL_LENGTH;
+            int distance = straight_count * CELL_LENGTH;
             if (MovementControl.getCurrFacing() == FORWARD) {
                 MovementControl.setCellX(MovementControl.getCellX() + distance);
             } else if (MovementControl.getCurrFacing() == BACKWARD) {
@@ -398,6 +397,7 @@ void movementChain(const String &commands) {
             } else if (MovementControl.getCurrFacing() == RIGHT) {
                 MovementControl.setCellY(MovementControl.getCellY() - distance);
             }
+            i+= straight_count - 1;
             driveToGlobalCoordinates(MovementControl.getCellX(), MovementControl.getCellY());
         } else if (commands[i] == 'l') {
             // Turning left
