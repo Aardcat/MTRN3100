@@ -159,7 +159,7 @@ void driveStraight(float distance) {
     ControllerH.zeroAndSetTarget(0, 0); // Target set as zero so that heading adjustment controller always tries to adjust back to correct heading
     ControllerV.zeroAndSetTarget(0, distance);
 
-    delay(150);
+    // delay(150);
     
     while (!at_destination) {
         mpu.update();
@@ -181,6 +181,7 @@ void driveStraight(float distance) {
 
         float adjustment_speed = 0; // default (L/R) adjustment speed should be zero
         float base_speed = clamp(ControllerV.compute(curr_x), MIN_PWM, MAX_PWM);
+        // base_speed = base_speed * 0.7;
         float leftPWM;
         float rightPWM;
 
@@ -190,28 +191,24 @@ void driveStraight(float distance) {
         if (curr_y > TOLERANCE_SIDEWAYS) {
             // drifted too far left
             adjustment_speed = fabs(clamp(ControllerH.compute(curr_y), MIN_PWM, MAX_ADJUSTMENT_PWM));
-            base_speed = base_speed * 0.7;
             leftPWM = base_speed + adjustment_speed;
             rightPWM = base_speed - (adjustment_speed * 1.5);
 
         } else if (curr_y < -TOLERANCE_SIDEWAYS) {
             // drifted too far right
             adjustment_speed = fabs(clamp(ControllerH.compute(curr_y), MIN_PWM, MAX_ADJUSTMENT_PWM));
-            base_speed = base_speed * 0.7;
             leftPWM = base_speed - (adjustment_speed * 1.5);
             rightPWM = base_speed + adjustment_speed;
 
         } else if (curr_h > TOLERANCE_TURNING) {
             // pointing too much left (only if not drifting too much)
             adjustment_speed = fabs(clamp(ControllerH.compute(curr_h), MIN_PWM, MAX_ADJUSTMENT_PWM));
-            base_speed = base_speed * 0.7;
             leftPWM = base_speed + adjustment_speed;
             rightPWM = base_speed - (adjustment_speed * 1.5);
 
         } else if (curr_h < -TOLERANCE_TURNING) {
             // pointing too much right (only if not drifting too much)
             adjustment_speed = fabs(clamp(ControllerH.compute(curr_h), MIN_PWM, MAX_ADJUSTMENT_PWM));
-            base_speed = base_speed * 0.7;
             leftPWM = base_speed - (adjustment_speed * 1.5);
             rightPWM = base_speed + adjustment_speed;   
 
@@ -235,7 +232,7 @@ void driveStraight(float distance) {
         }
         */
         
-        if (abs(ControllerV.getError()) <= TOLERANCE_FORWARD) {
+        if (fabs(ControllerV.getError()) <= TOLERANCE_FORWARD) {
             motorL.stop();
             motorR.stop();
             if (settle_start == 0) {
@@ -298,7 +295,7 @@ void turn(float heading, bool global) {
         float local_heading = MovementControl.getLocalHDeg();
         float speed = ControllerW.compute(local_heading);
 
-        if (abs(ControllerW.getError()) <= TOLERANCE_TURNING) {
+        if (fabs(ControllerW.getError()) <= TOLERANCE_TURNING) {
             motorL.stop();
             motorR.stop();
             if (settle_start == 0) {
@@ -352,7 +349,7 @@ void driveToGlobalCoordinates(float x, float y) {
     // Serial.print("current heading is ");
     // Serial.println(curr_heading);
 
-    delay(100);
+    // delay(100);
 
     driveStraight(distance);
 
@@ -432,7 +429,7 @@ void movementChain(const String &commands) {
         }
 
         Serial.println("Action executed.");
-        delay(150);
+        // delay(150);
         i++;
     }
 }
