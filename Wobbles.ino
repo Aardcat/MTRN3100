@@ -368,6 +368,10 @@ void driveToGlobalCoordinates(float x, float y) {
 // Uses CellX and CellY in the movementcontroller class -> these tell the robot it's x and y 
 // coordinate within the current maze cell that it's in. Used for updating the direction it's 
 // currently facing a bit easier. (only used within this function)
+
+
+//pure speed optimisaion function 
+
 void movementChain(const String &commands) {
     MovementControl.setCurrFacing(FORWARD);
     MovementControl.setCellX(0);
@@ -380,17 +384,20 @@ void movementChain(const String &commands) {
         if (commands[i] == 'f') {
             // Driving forward
             Serial.println("Driving forward!");
-
-            if (MovementControl.getCurrFacing() == FORWARD) {
-                MovementControl.setCellX(MovementControl.getCellX() + CELL_LENGTH);
-            } else if (MovementControl.getCurrFacing() == BACKWARD) {
-                MovementControl.setCellX(MovementControl.getCellX() - CELL_LENGTH);
-            } else if (MovementControl.getCurrFacing() == LEFT) {
-                MovementControl.setCellY(MovementControl.getCellY() + CELL_LENGTH);
-            } else if (MovementControl.getCurrFacing() == RIGHT) {
-                MovementControl.setCellY(MovementControl.getCellY() - CELL_LENGTH);
+            int straight_count = 0;
+            while (i + straight_count < commands.length() && commands[i + straight_count] == 'f') {
+                straight_count++;
             }
-
+            float distance = straight_count * CELL_LENGTH;
+            if (MovementControl.getCurrFacing() == FORWARD) {
+                MovementControl.setCellX(MovementControl.getCellX() + distance);
+            } else if (MovementControl.getCurrFacing() == BACKWARD) {
+                MovementControl.setCellX(MovementControl.getCellX() - distance);
+            } else if (MovementControl.getCurrFacing() == LEFT) {
+                MovementControl.setCellY(MovementControl.getCellY() + distance);
+            } else if (MovementControl.getCurrFacing() == RIGHT) {
+                MovementControl.setCellY(MovementControl.getCellY() - distance);
+            }
             driveToGlobalCoordinates(MovementControl.getCellX(), MovementControl.getCellY());
         } else if (commands[i] == 'l') {
             // Turning left
