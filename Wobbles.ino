@@ -234,27 +234,26 @@ void driveStraight(float distance) {
         }
         */
         
-        ////////////////////////////////////////////////////////////////////////////////////////////////////
-        // NEED TO IMPLEMENT: a filter for the robot to tell whether it is at its final position, instead
-        // of just relying on seeing whenever it hits zero speed
-        ////////////////////////////////////////////////////////////////////////////////////////////////////
-        
-        
-        
-        
-        if (base_speed == 0) {
+        uint32_t settle_start = 0;
+
+        if (abs(ControllerW.getError() <= TOLERANCE_FORWARD)) {
             motorL.stop();
             motorR.stop();
+            if (settle_start == 0) {
+                settle_start = millis();
+            } 
+            if (millis() - settle_start >= SETTLE_MS) {
+                at_destination = true;
+            }
         } else {
+            settle_start = 0;
             motorL.setPWM(clamp(leftPWM, MIN_PWM, MAX_PWM));
             motorR.setPWM(clamp(rightPWM, MIN_PWM, MAX_PWM));
         }
-        
-        at_destination = base_speed == 0; // Same as above, this should be changed to work with a filter
     }
-
+    
     motorL.stop();
-    motorR.stop();
+    motorR.stop();    
     mpu.update();
     MovementControl.update(encL.getCount(), encR.getCount(), mpu.getAngleZ());
 }
