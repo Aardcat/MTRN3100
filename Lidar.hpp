@@ -1,28 +1,3 @@
-// =============================================================================
-//  Lidar.hpp  -  Front VL6180X time-of-flight distance sensor
-//  MTRN3100 Micromouse   (same sensor as Lab02)
-//
-//  AI DISCLOSURE (assignment 5.1): written with assistance of a generative AI
-//  (Claude); logic reviewed by the team.
-// =============================================================================
-//  WHAT THIS IS FOR
-//  A VL6180X measures the distance to whatever is in front of it, in mm
-//  (reliable up to ~200 mm - perfect for the 200->100 mm task).
-//
-//  THE ADDRESS PROBLEM
-//  The kit has up to 3 TOF sensors on the SAME I2C bus, and every VL6180X
-//  powers up at the SAME default address (0x29). If two are on at once they
-//  clash. Each sensor has a shutdown pin (its "GP0" line on the PCB). So we:
-//     1. hold ALL sensors off,
-//     2. switch ON only the FRONT sensor,
-//     3. initialise it.
-//  For task 3.2 we only need the front one, so that is all we turn on.
-//
-//  WIRING (from the kit schematic): the three TOF GP0/enable lines are on
-//  A0 (TOF1), A1 (TOF2), A2 (TOF3). Set which one is your FRONT sensor below.
-//
-//  Requires the Pololu "VL6180X" Arduino library (the one used in Lab02).
-// =============================================================================
 #pragma once
 
 #include <Arduino.h>
@@ -31,42 +6,75 @@
 
 namespace mtrn3100 {
 
-class Lidar {
+class LidarArray {
 public:
-    // frontEnable = GP0 pin of the FRONT sensor.
-    // other1/other2 = GP0 pins of the other two sensors (held OFF so they don't
-    // clash on the bus). Use 255 if a sensor is not fitted.
-    Lidar(uint8_t frontEnable, uint8_t other1 = 255, uint8_t other2 = 255)
-        : frontPin(frontEnable), otherA(other1), otherB(other2) {}
+    // Constructor accepting pin assignments and custom I2C addresses
+    LidarArray(uint8_t pinFront, uint8_t pinLeft, uint8_t pinRight,
+               uint8_t addrFront = 0x52, uint8_t addrLeft = 0x54, uint8_t addrRight = 0x56)
+        : pinF(pinFront), pinL(pinLeft), pinR(pinRight),
+          addrF(addrFront), addrL(addrLeft), addrR(addrRight) {}
 
-    bool begin() {
+    void begin() {
         Wire.begin();
-        turnOff(frontPin);           // start with everything off
-        turnOff(otherA);
-        turnOff(otherB);
+
+        turnOff(pinF);
+        turnOff(pinL);
+        turnOff(pinR);
         delay(10);
 
-        pinMode(frontPin, OUTPUT);   // power up ONLY the front sensor
-        digitalWrite(frontPin, HIGH);
-        delay(50);                   // let it boot
+        // 2. Wake up and configure FRONT sensor ONLY
+        turnOn(pinF);
+        sensorF.init(); // FIX: Call as void, do not put inside if()
+        sensorF.configureDefault();
+        sensorF.setAddress(addrF);
+        sensorF.setTimeout(250);
 
-        sensor.init();
-        sensor.configureDefault();
-        sensor.setTimeout(250);
-        return true;
+        // 3. Wake up and configure LEFT sensor ONLY
+        turnOn(pinL);
+        sensorL.init(); // FIX: Call as void, do not put inside if()
+        sensorL.configureDefault();
+        sensorL.setAddress(addrL);
+        sensorL.setTimeout(250);
+
+        // 4. Wake up and configure RIGHT sensor ONLY
+        turnOn(pinR);
+        sensorR.init(); // FIX: Call as void, do not put inside if()
+        sensorR.configureDefault();
+        sensorR.setAddress(addrR);
+        sensorR.setTimeout(250);
+
     }
 
-    // Distance in mm from the SENSOR face to the wall (0..~255).
-    uint8_t readMM() { return sensor.readRangeSingleMillimeters(); }
+    uint16_t readFrontMM() { return sensorF.readRangeSingleMillimeters(); }
+    uint16_t readLeftMM()  { return sensorL.readRangeSingleMillimeters(); }
+    uint16_t readRightMM() { return sensorR.readRangeSingleMillimeters(); }
+    uint8_t readFrontAddress() { return sensorF.readReg(0x212); }
+    uint8_t readLeftAddress()  { return sensorL.readReg(0x212); }
+    uint8_t readRightAddress() { return sensorR.readReg(0x212); }
 
-    bool timedOut() { return sensor.timeoutOccurred(); }
+    bool timedOutFront() { return sensorF.timeoutOccurred(); }
+    bool timedOutLeft()  { return sensorL.timeoutOccurred(); }
+    bool timedOutRight() { return sensorR.timeoutOccurred(); }
 
 private:
     void turnOff(uint8_t pin) {
-        if (pin != 255) { pinMode(pin, OUTPUT); digitalWrite(pin, LOW); }
+        if (pin != 255) {
+            pinMode(pin, OUTPUT);
+            digitalWrite(pin, LOW);
+        }
     }
-    uint8_t frontPin, otherA, otherB;
-    VL6180X sensor;
+
+    void turnOn(uint8_t pin) {
+        if (pin != 255) {
+            pinMode(pin, OUTPUT);
+            digitalWrite(pin, HIGH); // Pulling XSHUT high wakes up sensor
+            delay(10);               // Small delay for boot sequence stability
+        }
+    }
+
+    uint8_t pinF, pinL, pinR;
+    uint8_t addrF, addrL, addrR;
+    VL6180X sensorF, sensorL, sensorR;
 };
 
 }  // namespace mtrn3100
