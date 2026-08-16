@@ -41,6 +41,11 @@ public:
         float delta_left_radians = ((leftValue - lastLPos) / COUNTS_PER_REV) * 2 * PI; 
         float delta_right_radians = ((rightValue - lastRPos) / COUNTS_PER_REV) * 2 * PI; 
 
+        // Serial.print("Left encoder value: ");
+        // Serial.println(leftValue);
+        // Serial.print("Right encoder value: ");
+        // Serial.println(rightValue);
+
         float delta_s = (R * delta_left_radians) / 2 + (R * delta_right_radians) / 2;
 
         // Calculating forward kinematics (x and y pos)
@@ -53,6 +58,7 @@ public:
         float localHTrue = (angleValue * PI / 180) - localHZeroRef;
         localH = atan2(sin(localHTrue), cos(localHTrue)); // wraps around to be within -pi to pi
         h = (angleValue * PI / 180);
+        h = atan2(sin(h), cos(h));
 
         lastLPos = leftValue;
         lastRPos = rightValue;
