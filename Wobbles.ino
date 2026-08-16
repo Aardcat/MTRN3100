@@ -1,13 +1,38 @@
+//version5.7
+
 #include "Motor.hpp"
 #include "Encoder.hpp"
 #include "PIDControl.hpp"
-#include "BangBangControl.hpp"
 #include "MovementController.hpp"
 #include "Lidar.hpp"
 #include "Wire.h"
-#include <MPU6050_light.h>
+#include "Filter.hpp"
+#include "MazeMap.hpp"
+#include "Display.hpp"
 
 #include <Math.h>
+#include <Wire.h>
+#include "VL6180X.h"
+#include <MPU6050_light.h>
+
+// ---------------------------------------------------------------------------
+//  DEBUG SWITCH  (flash saver)
+// ---------------------------------------------------------------------------
+//  Set DEBUG to 1 while developing to get the Serial messages back.
+//  Set it to 0 for the competition run: every print disappears at compile
+//  time, which removes the text AND the number->string formatting code from
+//  flash (worth roughly 2 kB).
+#define DEBUG 0
+
+#if DEBUG
+  #define DBG(x)    Serial.print(x)
+  #define DBGLN(x)  Serial.println(x)
+#else
+  #define DBG(x)
+  #define DBGLN(x)
+#endif
+
+
 
 // arduino pins
 #define M1_PWM 11
@@ -20,10 +45,6 @@
 #define M2_ENC_A 3     
 #define M2_ENC_B 8
 
-// Lidar enable pins
-#define TOF_FRONT_PIN  A3     
-#define TOF_LEFT_PIN A0
-#define TOF_RIGHT_PIN A1
 
 // Wheel constants
 #define COUNTS_PER_REV 700.0f      
@@ -36,28 +57,32 @@
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 // PID values for small heading adjustment
-#define KP_H            60
+#define KP_H            5
 #define KI_H            0  
-#define KD_H            8
+#define KD_H            0
 // PID values for forward speed control
-#define KP_V            80
-#define KI_V            0  
-#define KD_V            10
+#define KP_V            84
+#define KI_V            2  
+#define KD_V            8
 // PID values for turning speed control
-#define KP_W            180
-#define KI_W            5  
-#define KD_W            10
+#define KP_W            25
+#define KI_W            0  
+#define KD_W            1
 
 // Tolerances, maximums and minimums
 #define TOLERANCE_FORWARD    10     // tolerance (mm)
 #define TOLERANCE_SIDEWAYS   5      // tolerance (mm)
-#define TOLERANCE_TURNING    2.5f      // tolerance (degrees)
+#define TOLERANCE_TURNING    1.0f      // tolerance (degrees)
+#define TOLERANCE_FRONT_LIDAR 30
 #define SETTLE_MS     250    // must stay within tolerance this long to finish
 #define MOVE_TIMEOUT  8000   // give up on a move after this many ms (safety)
 #define START_DELAY   2000   // pause after power-on so you can place + step back
 #define MIN_PWM 20
 #define MAX_PWM 255
-#define MAX_ADJUSTMENT_PWM 70
+
+#define MAX_BASE_PWM        90
+#define MAX_MOTOR_PWM       120
+#define MAX_ADJUSTMENT_PWM  15
 
 // Constants for maze
 #define FORWARD 0
@@ -72,30 +97,61 @@
 #define M1_ENC_INVERT  false
 #define M2_ENC_INVERT  true 
 
+// Lidar enable pins A0 A3 A1
+#define TOF_FRONT_PIN  A2    
+#define TOF_LEFT_PIN   A0
+#define TOF_RIGHT_PIN  A1
+
 // 3.2 drive and stop (DO NOT NEED FOR REAL MICROMOUSE MAZE) 
 #define TARGET_MM          100.0f  // desired gap between robot FRONT and wall
 #define SENSOR_TO_FRONT_MM 0.0f    // MEASURE: mm the sensor face sits behind the front bumper
 #define STOP_TOL_MM        6.0f    // deadband so it rests within +/-5 mm
-#define KP_LIDAR           1.5f    // PWM per mm of distance error (tune)
+#define KP_LIDAR           15.0f    // PWM per mm of distance error (tune)
 #define MIN_MOVE_PWM       40      // min PWM 
 #define BASE_PWM     55       
+
+// Maze mapping / OLED display (assignment 4.3)
+// A wall counts as "there" if the lidar reads closer than this (mm).
+// Cell is 180 mm wide, so ~100 is a safe midpoint - TUNE on the real maze.
+#define WALL_THRESHOLD_MM 100
+
+// Maze start and end points (given)
+#define START_ROW 0
+#define START_COL 0
+#define START_DIR BACKWARD
+#define GOAL_ROW 9
+#define GOAL_COL 9
 
 
 // constructors
 MPU6050 mpu(Wire);
 mtrn3100::Motor motorL(M1_PWM, M1_DIR, M1_MOTOR_INVERT);
 mtrn3100::Motor motorR(M2_PWM, M2_DIR, M2_MOTOR_INVERT);
-mtrn3100::PIDController ControllerV(KP_V, KI_V, KD_V, TOLERANCE_FORWARD); // PID Controller for forward movement
-mtrn3100::PIDController ControllerH(KP_H, KI_H, KD_H, TOLERANCE_TURNING); // PID Controller for small heading adjustment
-mtrn3100::PIDController ControllerW(KP_H, KI_H, KD_H, TOLERANCE_TURNING); // PID Controller for stationary turns
+mtrn3100::PIDController ControllerV(KP_V, KI_V, KD_V, TOLERANCE_FORWARD, false); // PID Controller for forward movement
+mtrn3100::PIDController ControllerH(KP_H, KI_H, KD_H, TOLERANCE_TURNING, false); // PID Controller for small heading adjustment
+mtrn3100::PIDController ControllerW(KP_W, KI_W, KD_W, TOLERANCE_TURNING, true); // PID Controller for stationary turns
 mtrn3100::Encoder encL(M1_ENC_A, M1_ENC_B, M1_ENC_INVERT);
 mtrn3100::Encoder encR(M2_ENC_A, M2_ENC_B, M2_ENC_INVERT);
 mtrn3100::MovementController MovementControl(WHEEL_RADIUS_MM, WHEEL_TRACK_MM);
 
-////////////////////////////////////////////////////////////////////////////////////////////////////
-mtrn3100::Lidar lidar(TOF_FRONT_PIN, TOF_LEFT_PIN, TOF_RIGHT_PIN); // NEEDS TO BE CHANGED TO WORK WITH MULTIPLE LIDARS!!
-////////////////////////////////////////////////////////////////////////////////////////////////////
+mtrn3100::LidarArray lidars(TOF_FRONT_PIN, TOF_LEFT_PIN, TOF_RIGHT_PIN);
 
+// Maze map + OLED display (assignment 4.3 "visualisation ... with a % completion")
+mtrn3100::MazeMap maze;
+mtrn3100::Display display;
+
+// filters
+Filter filterL(3);  // faster side response
+Filter filterF(3);  // fastest front stop response
+Filter filterR(3);  // faster side response
+Filter filterIMU(10);
+
+
+// struct for defining cell based movement
+struct cellMovement {
+    int row;
+    int col;
+};
 
 
 // Tiny wrappers so attachInterrupt() can reach the encoder objects.
@@ -111,6 +167,126 @@ long countsForDistance(float mm) {
 long countsForTurn(float degrees) {
     float arc_mm = (WHEEL_TRACK_MM / 2.0f) * (degrees * PI / 180.0f);
     return countsForDistance(arc_mm);
+}
+void lidarCorrections(float &leftPWM, float &rightPWM) {
+// Check front lidar distance, stop if too close to wall in front
+    
+    float left_distance =  filterL.update(lidars.readLeftMM());
+    float right_distance = filterR.update(lidars.readRightMM());
+    float front_distance = filterF.update(lidars.readFrontMM());
+
+    // if (front_distance < TOLERANCE_FRONT_LIDAR) {
+    //     leftPWM = 0;
+    //     rightPWM = 0;
+    //     return;
+    // }
+//     Serial.print("L: ");
+//     Serial.print(left_distance);
+//     Serial.print(" R: ");
+//     Serial.println(right_distance);
+    
+    bool isLeftWall  = left_distance < 100;
+    bool isRightWall = right_distance < 100;
+
+    float error = 0;
+    if (isLeftWall && isRightWall) {
+        error = left_distance - right_distance;
+    }
+    // else if (isLeftWall) {
+
+    //     float desired_side_distance = 70;
+    //     error = left_distance - desired_side_distance;
+
+    // }
+    // else if (isRightWall) {
+    //     float desired_side_distance = 70;
+    //     error = desired_side_distance - right_distance;
+    // }
+    if (fabs(error) < 5) {
+        error = 0;
+    }
+    float corr = error * KP_LIDAR;
+    corr = constrain( corr, -MAX_ADJUSTMENT_PWM, MAX_ADJUSTMENT_PWM);
+
+// Serial.print("L: ");
+//     Serial.print(left_distance);
+//     Serial.print(" R: ");
+//     Serial.println(right_distance);
+//     Serial.print(" Correction: ");
+//     Serial.println(corr);
+
+    leftPWM -= corr;
+    rightPWM += corr;
+}
+// ---------------------------------------------------------------------------
+//  MAZE MAP + DISPLAY HELPERS  (assignment 4.3)
+// ---------------------------------------------------------------------------
+//  MovementControl tracks facing as FORWARD/LEFT/BACKWARD/RIGHT *relative to
+//  where the robot started*, and position as CellX/CellY in mm. The MazeMap
+//  needs absolute compass directions and row/col, so these convert between them.
+
+// Compass index the MazeMap uses: 0=N, 1=E, 2=S, 3=W.
+// (Same mapping driveToMazeCell() already assumes: FORWARD=N, RIGHT=E,
+//  BACKWARD=S, LEFT=W.)
+uint8_t compassFacing() {
+    uint8_t startIdx;
+    if      (START_DIR == FORWARD)  startIdx = 0;   // north
+    else if (START_DIR == RIGHT)    startIdx = 1;   // east
+    else if (START_DIR == BACKWARD) startIdx = 2;   // south
+    else                            startIdx = 3;   // west
+
+    // how many 90-degree ANTICLOCKWISE turns since the start
+    uint8_t ccw;
+    int f = MovementControl.getCurrFacing();
+    if      (f == FORWARD)  ccw = 0;
+    else if (f == LEFT)     ccw = 1;
+    else if (f == BACKWARD) ccw = 2;
+    else                    ccw = 3;                // RIGHT
+
+    return (uint8_t)((startIdx + 4 - ccw) & 3);
+}
+
+// Convert CellX/CellY (mm travelled from the start cell) back into maze row/col.
+// This is the inverse of the transform used in driveToMazeCell().
+int8_t currentRow() {
+    int dx = MovementControl.getCellX() / CELL_LENGTH;
+    int dy = MovementControl.getCellY() / CELL_LENGTH;
+    if      (START_DIR == FORWARD)  return START_ROW - dx;
+    else if (START_DIR == RIGHT)    return START_ROW - dy;
+    else if (START_DIR == BACKWARD) return START_ROW + dx;
+    else                            return START_ROW + dy;
+}
+
+int8_t currentCol() {
+    int dx = MovementControl.getCellX() / CELL_LENGTH;
+    int dy = MovementControl.getCellY() / CELL_LENGTH;
+    if      (START_DIR == FORWARD)  return START_COL - dy;
+    else if (START_DIR == RIGHT)    return START_COL + dx;
+    else if (START_DIR == BACKWARD) return START_COL + dy;
+    else                            return START_COL - dx;
+}
+
+// Record the current cell + the walls around it, then redraw the OLED.
+// Call this whenever the robot is STOPPED in a cell (lidar reads are slow, and
+// they are only meaningful when stationary).
+void updateMapAndDisplay() {
+    int8_t  row    = currentRow();
+    int8_t  col    = currentCol();
+    uint8_t facing = compassFacing();
+
+    maze.visit(row, col);
+
+    // one reading per sensor, filtered, converted to "is there a wall?"
+    bool wallF = filterF.update(lidars.readFrontMM()) < WALL_THRESHOLD_MM;
+    bool wallL = filterL.update(lidars.readLeftMM())  < WALL_THRESHOLD_MM;
+    bool wallR = filterR.update(lidars.readRightMM()) < WALL_THRESHOLD_MM;
+    maze.setWallsFromSensors(row, col, facing, wallF, wallL, wallR);
+
+    display.showMaze(maze, row, col);
+
+    DBG(F("cell(")); DBG(row); DBG(F(","));
+    DBG(col); DBG(F(") "));
+    DBG(maze.percentComplete()); DBGLN(F("% mapped"));
 }
 
 // Speed clamping helper function
@@ -132,15 +308,24 @@ void driveStraight(float distance) {
     MovementControl.zero(); // Sets current position and heading as the origin and constructs a set of
                             // local coordinates based on this position
     bool at_destination = false;
+    uint32_t move_start = millis();
+    uint32_t settle_start = 0;
 
     ControllerH.zeroAndSetTarget(0, 0); // Target set as zero so that heading adjustment controller always tries to adjust back to correct heading
     ControllerV.zeroAndSetTarget(0, distance);
 
-    delay(150);
-
+    // delay(150);
+    
     while (!at_destination) {
         mpu.update();
-        MovementControl.update(encL.getCount(), encR.getCount(), mpu.getAngleZ());
+        long left_count = encL.getCount();
+        long right_count = encR.getCount();
+        if (millis() - move_start > MOVE_TIMEOUT) {
+            motorL.stop();
+            motorR.stop();
+            break;
+        }
+        MovementControl.update(left_count, right_count, mpu.getAngleZ());
 
         // Updates local coordinates
         float curr_x = MovementControl.getX();
@@ -156,126 +341,135 @@ void driveStraight(float distance) {
         Serial.println(curr_h);
         */
 
+        float base_speed = clamp(ControllerV.compute(curr_x), MIN_PWM, MAX_BASE_PWM);
         float adjustment_speed = 0; // default (L/R) adjustment speed should be zero
-        float base_speed = clamp(ControllerV.compute(curr_x), MIN_PWM, MAX_PWM);
-        float leftPWM;
-        float rightPWM;
 
-        // The following block of if statements will tell the robot to adjust the speed of its wheels by a PWM adjustment factor,
-        // based on if it is drifting left or right of its designated track (will be corrected first) or if it is pointing off the centerline.
-        // Note that whenever adjustment is happening, the base speed is reduced to 70% of it's maximum (this is partly the reason for
-        // the robot's low speed):
+        float leftPWM = base_speed;
+        float rightPWM = base_speed;
 
-        ////////////////////////////////////////////////////////////////////////////////////////////////////
-        // please tune the PID better than I did so that you don't need this 30% reduction!!!
-        ////////////////////////////////////////////////////////////////////////////////////////////////////
         if (curr_y > TOLERANCE_SIDEWAYS) {
-            // drifted too far left
-            adjustment_speed = fabs(clamp(ControllerH.compute(curr_y), MIN_PWM, MAX_ADJUSTMENT_PWM));
-            base_speed = base_speed * 0.7;
-            leftPWM = base_speed + adjustment_speed;
-            rightPWM = base_speed - (adjustment_speed * 1.5);
+            adjustment_speed = fabs(ControllerH.compute(curr_y));
+            adjustment_speed = constrain(adjustment_speed, 0, MAX_ADJUSTMENT_PWM);
 
-        } else if (curr_y < -TOLERANCE_SIDEWAYS) {
-            // drifted too far right
-            adjustment_speed = fabs(clamp(ControllerH.compute(curr_y), MIN_PWM, MAX_ADJUSTMENT_PWM));
-            base_speed = base_speed * 0.7;
-            leftPWM = base_speed - (adjustment_speed * 1.5);
-            rightPWM = base_speed + adjustment_speed;
-
-        } else if (curr_h > TOLERANCE_TURNING) {
-            // pointing too much left (only if not drifting too much)
-            adjustment_speed = fabs(clamp(ControllerH.compute(curr_h), MIN_PWM, MAX_ADJUSTMENT_PWM));
-            base_speed = base_speed * 0.7;
-            leftPWM = base_speed + adjustment_speed;
-            rightPWM = base_speed - (adjustment_speed * 1.5);
-
-        } else if (curr_h < -TOLERANCE_TURNING) {
-            // pointing too much right (only if not drifting too much)
-            adjustment_speed = fabs(clamp(ControllerH.compute(curr_h), MIN_PWM, MAX_ADJUSTMENT_PWM));
-            base_speed = base_speed * 0.7;
-            leftPWM = base_speed - (adjustment_speed * 1.5);
-            rightPWM = base_speed + adjustment_speed;   
-
-        } else {
-            // within tolerances -> normal operation
-            leftPWM = base_speed;
-            rightPWM = base_speed;
+            leftPWM  = base_speed + adjustment_speed;
+            rightPWM = base_speed - adjustment_speed;
         }
-        
-        ////////////////////////////////////////////////////////////////////////////////////////////////////
-        // NEED TO IMPLEMENT: a filter for the robot to tell whether it is at its final position, instead
-        // of just relying on seeing whenever it hits zero speed
-        ////////////////////////////////////////////////////////////////////////////////////////////////////
-        if (base_speed == 0) {
+
+        else if (curr_y < -TOLERANCE_SIDEWAYS) {
+            adjustment_speed = fabs(ControllerH.compute(curr_y));
+            adjustment_speed = constrain(adjustment_speed, 0, MAX_ADJUSTMENT_PWM);
+
+            leftPWM  = base_speed - adjustment_speed;
+            rightPWM = base_speed + adjustment_speed;
+        }
+
+        else if (curr_h > TOLERANCE_TURNING) {
+            adjustment_speed = fabs(ControllerH.compute(curr_h));
+            adjustment_speed = constrain(adjustment_speed, 0, MAX_ADJUSTMENT_PWM);
+
+            leftPWM  = base_speed + adjustment_speed;
+            rightPWM = base_speed - adjustment_speed;
+        }
+
+        else if (curr_h < -TOLERANCE_TURNING) {
+            adjustment_speed = fabs(ControllerH.compute(curr_h));
+            adjustment_speed = constrain(adjustment_speed, 0, MAX_ADJUSTMENT_PWM);
+
+            leftPWM  = base_speed - adjustment_speed;
+            rightPWM = base_speed + adjustment_speed;
+        }
+        // lidarCorrections(leftPWM,rightPWM);
+
+        leftPWM = constrain(leftPWM, 0, MAX_MOTOR_PWM);
+        rightPWM = constrain(rightPWM, 0, MAX_MOTOR_PWM);
+
+
+        if (fabs(ControllerV.getError()) <= TOLERANCE_FORWARD) {
             motorL.stop();
             motorR.stop();
+            if (settle_start == 0) {
+                settle_start = millis();
+            } 
+            if (millis() - settle_start >= SETTLE_MS) {
+                at_destination = true;
+            }
         } else {
-            motorL.setPWM(clamp(leftPWM, MIN_PWM, MAX_PWM));
-            motorR.setPWM(clamp(rightPWM, MIN_PWM, MAX_PWM));
-            /*
-            Serial.print("left speed is: ");
-            Serial.println(leftPWM);
-            Serial.print("right speed is: ");
-            Serial.println(rightPWM);
-            */
+            settle_start = 0;
+            motorL.setPWM(leftPWM);
+            motorR.setPWM(rightPWM);
         }
-        
-        at_destination = base_speed == 0; // Same as above, this should be changed to work with a filter
     }
-
+    
     motorL.stop();
-    motorR.stop();
+    motorR.stop();    
     mpu.update();
     MovementControl.update(encL.getCount(), encR.getCount(), mpu.getAngleZ());
 }
 
 // turn to a target (local or global) heading (in degrees)
 void turn(float heading, bool global) {
+    mpu.update();
+    MovementControl.update(encL.getCount(), encR.getCount(), mpu.getAngleZ());
+    float current_global_H = MovementControl.getHDeg();
     encL.reset();
     encR.reset();
+
+
+    float target_turns;
+    
+    if (global) {
+        target_turns = heading - current_global_H;
+    } else {
+        target_turns = heading;
+    }
+    //wrapping heading
+    while (target_turns > 180) { 
+        target_turns -= 360;
+    }
+    while (target_turns < -180) {
+        target_turns += 360;
+    };
+
     MovementControl.zero(); // Same as the function for moving forward, sets local origin at it's current pos
+   
     bool at_destination = false;
 
-    ControllerW.zeroAndSetTarget(0, heading);
-    float start_x = MovementControl.getGlobalX();
-    float start_y = MovementControl.getGlobalY();
+    ControllerW.zeroAndSetTarget(0, target_turns);
 
-    Serial.print("turn start x is ");
-    Serial.println(MovementControl.getGlobalX());
-    Serial.print("turn start y is ");
-    Serial.println(MovementControl.getGlobalY());
+    // Serial.print("turn start x is ");
+    // Serial.println(MovementControl.getGlobalX());
+    // Serial.print("turn start y is ");
+    // Serial.println(MovementControl.getGlobalY());
+    uint32_t settle_start = 0;
 
     while (!at_destination) {
         mpu.update();
         MovementControl.update(encL.getCount(), encR.getCount(), mpu.getAngleZ());
-        float curr_h;
+        float local_heading = MovementControl.getLocalHDeg();
+        float speed = ControllerW.compute(local_heading);
 
-        // Tells the controller to either use global (raw data from IMU) or local heading (based on the
-        // local origin point set at the start of this movement)
-        if (global) {
-            curr_h = MovementControl.getHDeg();
+        // Serial.print("Error turning is: ");
+        Serial.println(ControllerW.getError());
+
+        if (abs(ControllerW.getError()) <= TOLERANCE_TURNING) {
+            motorL.stop();
+            motorR.stop();
+            if (settle_start == 0) {
+                settle_start = millis();
+            } 
+            if (millis() - settle_start >= SETTLE_MS) {
+                at_destination = true;
+            }
         } else {
-            curr_h = MovementControl.getLocalHDeg();
+            settle_start = 0;
+            speed = clamp(speed, MIN_PWM, MAX_MOTOR_PWM);
+            motorL.setPWM(-speed);
+            motorR.setPWM(speed);
         }
-        float speed = clamp(ControllerW.compute(curr_h), MIN_PWM, MAX_PWM);
-
-        //Serial.println(curr_h);
-     
-        motorL.setPWM(-speed);
-        motorR.setPWM(speed);
-
-        ////////////////////////////////////////////////////////////////////////////////////////////////////
-        // Same as for the driving function, need to implement a filter here to check when it has 
-        // reached it's destination
-        ////////////////////////////////////////////////////////////////////////////////////////////////////
-        at_destination = (speed == 0);
+        // at_destination = (speed == 0);
     }
-
     motorL.stop();
     motorR.stop();
-    mpu.update();
-    MovementControl.update(encL.getCount(), encR.getCount(), mpu.getAngleZ());
 }
 
 // Calculates straight line path given an x and y global coordinate, turns towards the destination, 
@@ -286,30 +480,31 @@ void driveToGlobalCoordinates(float x, float y) {
     float curr_x = MovementControl.getGlobalX();
     float curr_y = MovementControl.getGlobalY();
 
-    Serial.print("x is ");
-    Serial.println(x);
-    Serial.print("y is ");
-    Serial.println(y);
+    // Serial.print("x is ");
+    // Serial.println(x);
+    // Serial.print("y is ");
+    // Serial.println(y);
 
-    Serial.print("curr_x is ");
-    Serial.println(curr_x);
-    Serial.print("curr_y is ");
-    Serial.println(curr_y);
+    // Serial.print("curr_x is ");
+    // Serial.println(curr_x);
+    // Serial.print("curr_y is ");
+    // Serial.println(curr_y);
 
     float delta_x = x - curr_x;
     float delta_y = y - curr_y;
 
     float distance = hypot(delta_x, delta_y);
     
-
     float heading = atan2(delta_y, delta_x) * 180 / PI;
+
+    turn(heading, true);
 
     Serial.print("distance is ");
     Serial.println(distance);
-    Serial.print("heading is ");
+    Serial.print("desired heading is ");
     Serial.println(heading);
-
-    turn(heading, true); // Turns to face the desired destination
+    Serial.print("current heading is ");
+    Serial.println(MovementControl.getHDeg());
 
     delay(100);
 
@@ -326,33 +521,42 @@ void driveToGlobalCoordinates(float x, float y) {
 // Uses CellX and CellY in the movementcontroller class -> these tell the robot it's x and y 
 // coordinate within the current maze cell that it's in. Used for updating the direction it's 
 // currently facing a bit easier. (only used within this function)
-void movementChain(const String &commands) {
+
+
+//pure speed optimisaion function 
+
+void movementChain(const char *commands) {
     MovementControl.setCurrFacing(FORWARD);
     MovementControl.setCellX(0);
     MovementControl.setCellY(0);
     int i = 0;
 
-    while (i < commands.length()) {
-        Serial.println("Executing command...");
+    updateMapAndDisplay();   // record + show the starting cell
 
+    while (i < (int)strlen(commands)) {
+        // updateMapAndDisplay();
         if (commands[i] == 'f') {
             // Driving forward
-            Serial.println("Driving forward!");
-
-            if (MovementControl.getCurrFacing() == FORWARD) {
-                MovementControl.setCellX(MovementControl.getCellX() + CELL_LENGTH);
-            } else if (MovementControl.getCurrFacing() == BACKWARD) {
-                MovementControl.setCellX(MovementControl.getCellX() - CELL_LENGTH);
-            } else if (MovementControl.getCurrFacing() == LEFT) {
-                MovementControl.setCellY(MovementControl.getCellY() + CELL_LENGTH);
-            } else if (MovementControl.getCurrFacing() == RIGHT) {
-                MovementControl.setCellY(MovementControl.getCellY() - CELL_LENGTH);
+            DBGLN(F("Driving forward!"));
+            int straight_count = 0;
+            while (i + straight_count < (int)strlen(commands) && commands[i + straight_count] == 'f') {
+                straight_count++;
             }
-
+            int distance = straight_count * CELL_LENGTH;
+            if (MovementControl.getCurrFacing() == FORWARD) {
+                MovementControl.setCellX(MovementControl.getCellX() + distance);
+            } else if (MovementControl.getCurrFacing() == BACKWARD) {
+                MovementControl.setCellX(MovementControl.getCellX() - distance);
+            } else if (MovementControl.getCurrFacing() == LEFT) {
+                MovementControl.setCellY(MovementControl.getCellY() + distance);
+            } else if (MovementControl.getCurrFacing() == RIGHT) {
+                MovementControl.setCellY(MovementControl.getCellY() - distance);
+            }
+            i+= straight_count - 1;
             driveToGlobalCoordinates(MovementControl.getCellX(), MovementControl.getCellY());
         } else if (commands[i] == 'l') {
             // Turning left
-            Serial.println("Turning left!");
+            DBGLN(F("Turning left!"));
             
             if (MovementControl.getCurrFacing() == FORWARD) {
                 MovementControl.setCurrFacing(LEFT);
@@ -367,7 +571,7 @@ void movementChain(const String &commands) {
             turn(90, false);
         } else if (commands[i] == 'r') {
             // Turning right
-            Serial.println("Turning right!");
+            DBGLN(F("Turning right!"));
 
             if (MovementControl.getCurrFacing() == FORWARD) {
                 MovementControl.setCurrFacing(RIGHT);
@@ -381,117 +585,129 @@ void movementChain(const String &commands) {
 
             turn(-90, false);
         }
-
-        Serial.println("Action executed.");
         delay(150);
+        updateMapAndDisplay();   // refresh map + % after every completed action
         i++;
     }
 }
 
-// Taken straight from Rey's code for the week 8 task (for lidar portion)
-// You can take bits from this code to make your own lidar code (my idea for lidar is that it can
-// be used inside the maze to correct IMU drift - so like maybe when the robot detects that it has a wall
-// on both its left and right, it should try and have the left and right lidar distances be the same, because
-// this would mean that it's in the middle of the cell -> or something, you guys can figure this out lol)
-////////////////////////////////////////////////////////////////////////////////////////////////////
-// i.e. please implement lidar as part of the robot
-////////////////////////////////////////////////////////////////////////////////////////////////////
-void driveAndStop() {
-    Serial.println("Drive & stop: holding 100 mm from wall (runs continuously).");
-    unsigned long t = 0;
+// Helper function for driving to global coordinates, given a target maze cell
+// In maze -> start and end points given as (row, column, direction)
+void driveToMazeCell(int row, int col) {
+    int dist_row = row - START_ROW;
+    int dist_col = col - START_COL;
+    int target_x;
+    int target_y;
 
-    while (true) {
-        int reading  = lidar.readMM();              
-        float gap    = reading - SENSOR_TO_FRONT_MM;  
-        float error  = gap - TARGET_MM;              
-        float mag    = (error < 0) ? -error : error;
-
-        int16_t out;
-        if (mag <= STOP_TOL_MM) {
-            out = 0;                                   
-        } else {
-            out = (int16_t)(KP_LIDAR * error);         
-            int16_t om = (out < 0) ? -out : out;       
-            if (om < MIN_MOVE_PWM) out = (error > 0) ? MIN_MOVE_PWM : -MIN_MOVE_PWM;
-            if (out >  BASE_PWM) out =  BASE_PWM;
-            if (out < -BASE_PWM) out = -BASE_PWM;
-        }
-        motorL.setPWM(out);                            
-        motorR.setPWM(out);
-
-        if (millis() - t >= 200) {
-            t = millis();
-            Serial.print("dist="); Serial.print(reading);
-            Serial.print("mm  err="); Serial.print(error, 1);
-            Serial.print("  pwm="); Serial.println(out);
-        }
+    if (START_DIR == FORWARD) {
+        // north -> x and y inverted
+        target_x = -dist_row * 180;
+        target_y = -dist_col * 180;
+    } else if (START_DIR == RIGHT) {
+        // east -> x is y, y is -x
+        target_x = dist_col * 180;
+        target_y = -dist_row * 180;
+    } else if (START_DIR == BACKWARD) {
+        // south -> x and y both correct
+        target_x = dist_row * 180;
+        target_y = dist_col * 180;
+    } else if (START_DIR == LEFT) {
+        // west -> x is -y, y is x
+        target_x = -dist_col * 180;
+        target_y = dist_row * 180;
     }
+
+    driveToGlobalCoordinates(target_x, target_y);
 }
 
 // ----------------------------------------------------------------------------
 //  SETUP 
 // ----------------------------------------------------------------------------
 void setup() {
-    Serial.begin(9600);
+    Serial.begin(115200);
 
     attachInterrupt(digitalPinToInterrupt(M1_ENC_A), isrL, RISING);
     attachInterrupt(digitalPinToInterrupt(M2_ENC_A), isrR, RISING);
 
-    //Serial.begin(115200); // I never figured out how to have two baud rates concurrently (don't think you can?)
-    // So the IMU is running at 9600 baud making it update not as quickly (not too big of an issue)
     Wire.begin();
+
+    // Start the OLED first so we can show progress while the IMU calibrates.
+    display.begin();
+    display.showMessage("WOBBLES", "starting...");
 
     //Set up the IMU
     byte status = mpu.begin();
-    Serial.print(F("MPU6050 status: "));
-    Serial.println(status);
-    while(status!=0){ } 
+    DBG(F("MPU6050 status: "));
+    DBGLN(status);
+    //while(status!=0){ } 
     
-    Serial.println(F("Calculating offsets, do not move MPU6050"));
+    DBGLN(F("Calculating offsets, do not move MPU6050"));
     delay(1000);
     mpu.calcOffsets(true,true);
-    Serial.println("Done!\n");
+    DBGLN(F("Done!\n"));
 
-    lidar.begin();
-    Serial.println("Front lidar started.");
+    // Init lidars
+    lidars.begin();
 
     motorL.stop();
     motorR.stop();
 
-
     delay(START_DELAY);
 
-    ////////////////////////////////////////////////////////////////////////////////////////////////////
-    // Below tasks are from week 8, we don't need the first few but please try implement the maze
-    // driving code using the chaining movements code from week 8
-    ////////////////////////////////////////////////////////////////////////////////////////////////////
-
-    // Task 1 - straight line
-    /*
-    driveStraight(1000);
-    delay(300);
-    */
-
-    // Task 2 - LIDAR
-    //driveAndStop();
-
-    // Task 3 - Turning
-    /*
-    turn(-90, true);
-    unsigned long start_time = millis();
-    unsigned long delay_time = 7000;
-    while (millis() - start_time < delay_time) {
-        mpu.update();
-        MovementControl.update(0, 0, mpu.getAngleZ());
-        Serial.println(MovementControl.getHDeg());
-    }
-    turn(-88, true);
-    */
-
-    // Task 4 - Chaining Movements
-    
-    String commands = "lfrfffrf";
+    //const char *commands = "flflflflflflflflflflflflrrr";
+    const char *commands = "ff";
     movementChain(commands);
+
+    // leave the finished map + % on screen for the demonstrator
+    display.showMaze(maze, currentRow(), currentCol());
+    // int move_length = 12;
+    // struct cellMovement moves[move_length] = {
+    //     {1, 0},
+    //     {1, 1},
+    //     {0, 1},
+    //     {0, 0},
+    //     {1, 0},
+    //     {1, 1},
+    //     {0, 1},
+    //     {0, 0},
+    //     {1, 0},
+    //     {1, 1},
+    //     {0, 1},
+    //     {0, 0},
+    // };
+
+    // for (int i = 0; i < move_length; i++) {
+    //     driveToMazeCell(moves[i].row, moves[i].col);
+    // }
+
+    
+    
 }
 
-void loop() {}
+void loop() {
+    
+    // int lastPrintTime = 0;
+    // if (millis() - lastPrintTime >= 1000) {
+    //     lastPrintTime = millis();
+
+    //     uint8_t distF = lidars.readFrontMM();
+    //     uint8_t distL = lidars.readLeftMM();
+    //     uint8_t distR = lidars.readRightMM();
+
+    //     DBG(F("Front: "));
+    //     if (lidars.timedOutFront()) DBG(F("TIMEOUT")); else DBG(distF);
+    //     DBG(F(" mm | "));
+    //     DBG(lidars.readFrontAddress());
+
+    //     DBG(F("Left: "));
+    //     if (lidars.timedOutLeft()) DBG(F("TIMEOUT")); else DBG(distL);
+    //     DBG(F(" mm | "));
+    //     DBG(lidars.readLeftAddress());
+
+    //     DBG(F("Right: "));
+    //     if (lidars.timedOutRight()) DBG(F("TIMEOUT")); else DBG(distR);
+    //     DBGLN(F(" mm"));
+    //     DBG(lidars.readRightAddress());
+    // }
+    
+}
