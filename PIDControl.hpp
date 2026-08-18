@@ -59,8 +59,15 @@ public:
     // Target is the setpoint value.
     void zeroAndSetTarget(float zero, float target) {
         prev_time = micros();
+        curr_time = prev_time;
         zero_ref = zero;
         setpoint = target;
+        error = 0.0f;
+        prev_error = 0.0f;
+        integral = 0.0f;
+        derivative = 0.0f;
+        output = 0.0f;
+        dt = 0.0f;
     }
 
 public:
