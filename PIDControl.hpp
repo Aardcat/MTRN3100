@@ -6,7 +6,7 @@ namespace mtrn3100 {
 
 class PIDController {
 public:
-    PIDController(float kp, float ki, float kd, long tolerance) : kp(kp), ki(ki), kd(kd), tolerance(tolerance) {}
+    PIDController(float kp, float ki, float kd, long tolerance, bool forTurning) : kp(kp), ki(ki), kd(kd), tolerance(tolerance), forTurning(forTurning) {}
 
     // Compute the output signal required from the current/actual value.
     float compute(float input) {
@@ -16,6 +16,12 @@ public:
 
         error = setpoint - (input - zero_ref);
         /*
+        if (forTurning) {
+            if (error > 180) {  error -= 180; error = error * -1;  }
+            else if (error < -180) {    error += 180; error = error * -1;   }
+        }
+        */
+        /*
         Serial.print("Error is: ");
         Serial.println(error);
         */
@@ -24,6 +30,7 @@ public:
 			output = 0;
 			return output;
 		}
+
 
         integral = integral + error * dt;
         derivative = (error-prev_error) / dt;
@@ -52,8 +59,15 @@ public:
     // Target is the setpoint value.
     void zeroAndSetTarget(float zero, float target) {
         prev_time = micros();
+        curr_time = prev_time;
         zero_ref = zero;
         setpoint = target;
+        error = 0.0f;
+        prev_error = 0.0f;
+        integral = 0.0f;
+        derivative = 0.0f;
+        output = 0.0f;
+        dt = 0.0f;
     }
 
 public:
@@ -67,8 +81,8 @@ private:
     float prev_error = 0;
     float setpoint = 0;
     float zero_ref = 0;
+    bool forTurning;
 
-    
 };
 
 }  // namespace mtrn3100
