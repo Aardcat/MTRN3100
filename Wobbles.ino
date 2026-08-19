@@ -72,14 +72,16 @@
 // Tolerances, maximums and minimums
 #define TOLERANCE_FORWARD    10     // tolerance (mm)
 #define TOLERANCE_SIDEWAYS   5      // tolerance (mm)
-#define TOLERANCE_TURNING    1.0f      // tolerance (degrees)
+#define TOLERANCE_TURNING    2.0f      // tolerance (degrees)
 #define TOLERANCE_FRONT_LIDAR 30
-#define SETTLE_MS     250    // must stay within tolerance this long to finish
+#define SETTLE_MS     50    // must stay within tolerance this long to finish
 #define MOVE_TIMEOUT  8000   // give up on a move after this many ms (safety)
 #define TURN_TIMEOUT  4000   // give up on a move after this many ms (safety)
 #define START_DELAY   2000   // pause after power-on so you can place + step back
 #define MIN_PWM 20
 #define MAX_PWM 255
+#define MIN_TURN_PWM 10
+#define MAX_TURN_PWM 80
 
 #define MAX_BASE_PWM        90
 #define MAX_MOTOR_PWM       120
@@ -336,12 +338,24 @@ void driveStraight(float distance) {
         */
 
         float base_speed = clamp(ControllerV.compute(curr_x), MIN_PWM, MAX_BASE_PWM);
-        float distance_error = ControllerV.getError();
-        if (distance_error <-TOLERANCE_FORWARD) {
-            settle_start = 0;
-            motorL.setPWM(-MIN_PWM);
-            motorR.setPWM(-MIN_PWM);
-            continue;
+        float distance_error = distance - curr_x;
+
+        const float STOP_TOLERANCE = 8.0f;      
+        const float REVERSE_THRESHOLD = 30.0f;   
+
+        if (abs(distance_error) <= STOP_TOLERANCE) {
+            base_speed = 0;
+        }
+        else if (distance_error > 0) {
+            base_speed = abs(base_speed);
+        }
+        else {
+            if (abs(distance_error) > REVERSE_THRESHOLD) {
+                base_speed = -abs(base_speed);
+            }
+            else {
+                base_speed = 0;
+            }
         }
 
         float adjustment_speed = 0; // default (L/R) adjustment speed should be zero
@@ -383,11 +397,11 @@ void driveStraight(float distance) {
         float lidar_adj = lidarCorrections();
         leftPWM  -= lidar_adj;
         rightPWM += lidar_adj;
-        leftPWM = constrain(leftPWM, 0, MAX_MOTOR_PWM);
-        rightPWM = constrain(rightPWM, 0, MAX_MOTOR_PWM);
+        leftPWM = constrain(leftPWM, -MAX_MOTOR_PWM, MAX_MOTOR_PWM);
+        rightPWM = constrain(rightPWM, -MAX_MOTOR_PWM, MAX_MOTOR_PWM);
 
 
-        if (fabs(ControllerV.getError()) <= TOLERANCE_FORWARD) {
+        if (distance_error <= STOP_TOLERANCE && distance_error >= -REVERSE_THRESHOLD) {
             motorL.stop();
             motorR.stop();
             if (settle_start == 0) {
@@ -460,7 +474,6 @@ void turn(float heading, bool global) {
         float speed = ControllerW.compute(local_heading);
 
         // Serial.print("Error turning is: ");
-        Serial.println(ControllerW.getError());
 
         if (abs(ControllerW.getError()) <= TOLERANCE_TURNING) {
             motorL.stop();
@@ -473,7 +486,15 @@ void turn(float heading, bool global) {
             }
         } else {
             settle_start = 0;
-            speed = clamp(speed, MIN_PWM, MAX_MOTOR_PWM);
+            speed = clamp(speed, MIN_TURN_PWM, MAX_TURN_PWM);
+            float error = fabs(ControllerW.getError());
+            if (error < 15.0f) {
+                speed = constrain(speed, -40, 40);
+            }
+
+            if (error < 5.0f) {
+                speed = constrain(speed, -20, 20);
+            }
             motorL.setPWM(-speed);
             motorR.setPWM(speed);
         }
@@ -516,8 +537,6 @@ void driveToGlobalCoordinates(float x, float y) {
     Serial.println(heading);
     Serial.print("current heading is ");
     Serial.println(MovementControl.getHDeg());
-
-    delay(100);
 
     driveStraight(distance);
 
@@ -601,7 +620,6 @@ void movementChain(const char *commands) {
 
             turn(-90, false);
         }
-        delay(150);
         updateMapAndDisplay();   // refresh map + % after every completed action
         i++;
     }
@@ -684,7 +702,7 @@ void setup() {
     delay(START_DELAY);
 
     //const char *commands = "flflflflflflflflflflflflrrr";
-    const char *commands = "frf";
+    const char *commands = "frfrfrfr";
     movementChain(commands);
 
     // leave the finished map + % on screen for the demonstrator
