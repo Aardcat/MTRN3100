@@ -1,4 +1,4 @@
-//version5.7
+//version5.8
 
 #include "Motor.hpp"
 #include "Encoder.hpp"
@@ -11,7 +11,6 @@
 #include "Display.hpp"
 
 #include <Math.h>
-#include <Wire.h>
 #include "VL6180X.h"
 #include <MPU6050_light.h>
 
@@ -133,6 +132,7 @@
 #define GOAL_COL 9
 
 
+
 // constructors
 MPU6050 mpu(Wire);
 mtrn3100::Motor motorL(M1_PWM, M1_DIR, M1_MOTOR_INVERT);
@@ -162,6 +162,31 @@ struct cellMovement {
     int col;
 };
 
+struct Waypoint {
+    float x;
+    float y;
+};
+
+struct ContinuousSection {
+    const Waypoint *points;
+    int count;
+};
+
+
+//change this struct with coordinates on teh day
+const Waypoint continuousPath67[] = {
+    {375,300},
+    {292,127},
+    {214,112},
+    {150,75},
+    {100,50}
+};
+const ContinuousSection continuousSections[] = {
+    { continuousPath67, sizeof(continuousPath67) / sizeof(continuousPath67[0]) }
+};
+
+const int continuousSectionCount = sizeof(continuousSections) / sizeof(continuousSections[0]);
+
 
 // Tiny wrappers so attachInterrupt() can reach the encoder objects.
 void isrL() { encL.readEncoder(); }
@@ -178,16 +203,6 @@ void isrR() { encR.readEncoder(); }
 //     return countsForDistance(arc_mm);
 // }
 
-// ---------------------------------------------------------------------------
-//  MAZE MAP + DISPLAY HELPERS  (assignment 4.3)
-// ---------------------------------------------------------------------------
-//  MovementControl tracks facing as FORWARD/LEFT/BACKWARD/RIGHT *relative to
-//  where the robot started*, and position as CellX/CellY in mm. The MazeMap
-//  needs absolute compass directions and row/col, so these convert between them.
-
-// Compass index the MazeMap uses: 0=N, 1=E, 2=S, 3=W.
-// (Same mapping driveToMazeCell() already assumes: FORWARD=N, RIGHT=E,
-//  BACKWARD=S, LEFT=W.)
 uint8_t compassFacing() {
     uint8_t startIdx;
     if      (START_DIR == FORWARD)  startIdx = 0;   // north
@@ -553,29 +568,6 @@ void driveToGlobalCoordinates(float x, float y) {
     // } else {
     //     heading = atan2(delta_y, delta_x) * 180 / PI;
     // }
-char line1[20];
-char line2[20];
-
-snprintf(
-    line1,
-    sizeof(line1),
-    "X%.0f Y%.0f",
-    curr_x,
-    curr_y
-);
-
-snprintf(
-    line2,
-    sizeof(line2),
-    "TX%.0f TY%.0f",
-    x,
-    y
-);
-
-display.showMessage(
-    line1,
-    line2
-);
 
     turn(heading, true);
     driveStraight(distance);
@@ -590,16 +582,59 @@ display.showMessage(
 // currently facing a bit easier. (only used within this function)
 
 
-//pure speed optimisaion function 
+//continuos part for 4.2
 
-void movementChain(const char *commands) {
+
+void driveContinuousSection(const ContinuousSection &section) {
+    for (int i = 0; i < section.count; i++) {
+        mpu.update();
+        MovementControl.update(encL.getCount(), encR.getCount(), mpu.getAngleZ());
+        float curr_x = MovementControl.getGlobalX();
+        float curr_y = MovementControl.getGlobalY();
+
+        float dx = section.points[i].x - curr_x;
+        float dy = section.points[i].y - curr_y;
+        float distance = hypot(dx,dy);
+        if (distance <10.0f) {
+            continue;
+        }
+        driveToGlobalCoordinates(section.points[i].x, section.points[i].y);
+    }
+}
+
+void pcc(float startHeading, float &desiredHeading) {
+    mpu.update();
+    MovementControl.update(encL.getCount(),encR.getCount(),mpu.getAngleZ());
+    float currentHeading = MovementControl.getHDeg();
+    float relativeHeading = wrapAngle(currentHeading - startHeading);    
+    int quarterTurns = round(relativeHeading / 90.0f);
+    desiredHeading = wrapAngle(startHeading + quarterTurns * 90.0f);
+    turn(desiredHeading, true);
+    int facingIndex = ((quarterTurns % 4) + 4) % 4;
+
+    if (facingIndex == 0) {
+        MovementControl.setCurrFacing(FORWARD);
+    } else if (facingIndex == 1) {
+        MovementControl.setCurrFacing(LEFT);
+    } else if (facingIndex == 2) {
+        MovementControl.setCurrFacing(BACKWARD);
+    } else {
+        MovementControl.setCurrFacing(RIGHT);
+    }
+}
+
+void movementChain(const char *commands, const ContinuousSection *sections, int sectionCount) {
     MovementControl.setCurrFacing(FORWARD);
     MovementControl.setCellX(0);
     MovementControl.setCellY(0);
-    int i = 0;
+    mpu.update();
+    MovementControl.update(encL.getCount(), encR.getCount(), mpu.getAngleZ());
 
-    updateMapAndDisplay();   // record + show the starting cell
-    float desiredHeading = MovementControl.getHDeg();
+    float startHeading = MovementControl.getHDeg();
+    float desiredHeading = startHeading;
+    int i = 0;
+    int continuousIndex = 0;
+    updateMapAndDisplay(); 
 
     while (i < (int)strlen(commands)) {
         // updateMapAndDisplay();
@@ -664,6 +699,13 @@ void movementChain(const char *commands) {
                 desiredHeading += 360.0f;
 
             turn(desiredHeading, true);   
+        } else if (commands[i] == 'c') {
+            DBGLN(F("Continuous section!"));
+            if (continuousIndex < sectionCount) {
+                driveContinuousSection(sections[continuousIndex]);
+                continuousIndex++;
+                pcc(startHeading, desiredHeading);
+            }
         }
         updateMapAndDisplay();   // refresh map + % after every completed action
         i++;
@@ -676,10 +718,6 @@ void driveToMazeCell(int row, int col) {
     //check to see if the maze is the correct size
     if (row < 0 || row >= 9 || col < 0 || col >= 9) {
         Serial.print("INVALID MAZE CELL: (");
-        Serial.print(row);
-        Serial.print(", ");
-        Serial.print(col);
-        Serial.println(")");
         return;
     }
     int dist_row = row - START_ROW;
@@ -711,31 +749,31 @@ void driveToMazeCell(int row, int col) {
 
     updateMapAndDisplay();
 }
-void showMoveInfo(float heading, float delta_x, float delta_y) {
+// void showMoveInfo(float heading, float delta_x, float delta_y) {
 
-    char line1[20];
-    char line2[20];
+//     char line1[20];
+//     char line2[20];
 
-    snprintf(line1, sizeof(line1), "H: %.1f", heading);
-    snprintf(line2, sizeof(line2), "dx%.0f dy%.0f", delta_x, delta_y);
+//     snprintf(line1, sizeof(line1), "H: %.1f", heading);
+//     snprintf(line2, sizeof(line2), "dx%.0f dy%.0f", delta_x, delta_y);
 
-    display.showMessage(line1, line2);
+//     display.showMessage(line1, line2);
 
-    delay(1500);
-}
-void showEncoderCounts() {
-    long leftCount  = encL.getCount();
-    long rightCount = encR.getCount();
+//     delay(1500);
+// }
+// void showEncoderCounts() {
+//     long leftCount  = encL.getCount();
+//     long rightCount = encR.getCount();
 
-    char line1[20];
-    char line2[20];
+//     char line1[20];
+//     char line2[20];
 
-    snprintf(line1, sizeof(line1), "L: %ld", leftCount);
-    snprintf(line2, sizeof(line2), "R: %ld", rightCount);
+//     snprintf(line1, sizeof(line1), "L: %ld", leftCount);
+//     snprintf(line2, sizeof(line2), "R: %ld", rightCount);
 
-    display.showMessage(line1, line2);
-    delay(1500);
-}
+//     display.showMessage(line1, line2);
+//     delay(1500);
+// }
 
 // ----------------------------------------------------------------------------
 //  SETUP 
@@ -772,16 +810,14 @@ void setup() {
     delay(START_DELAY);
 
     //const char *commands = "flflflflflflflflflflflflrrr";
-    const char *commands = "ffflffrflffflffrf";
+    const char *commands = "frffflfflfrfrflflfrflfclffrflf";
     // const char *commands = "frfrfrfrflflflfl";
 
 // driveToGlobalCoordinates(0, 0);
 // driveToGlobalCoordinates(-299, -623);
 // driveToGlobalCoordinates(-580, -677);
 // driveToGlobalCoordinates(-810, -810);
-
-    movementChain(commands);
-    // driveStraight(500);
+    movementChain(commands, continuousSections, continuousSectionCount);
 
     // leave the finished map + % on screen for the demonstrator
     display.showMaze(maze, currentRow(), currentCol());
