@@ -12,7 +12,7 @@
 namespace mtrn3100 {
 class MovementController {
 public:
-    MovementController(float radius, float wheelBase) : x(0), y(0), localH(0), globalX(0), globalY(0), h(0), R(radius), B(wheelBase), lastLPos(0), lastRPos(0) {}
+    MovementController(float radius, float wheelBase) : x(0), y(0), localH(0), globalX(0), globalY(0), h(0), R(radius), B(wheelBase), lastLPos(0), lastRPos(0),currFacing(FORWARD), cellX(0), cellY(0) {}
 
     // Global reset - resets all parameters
     void globalZero() {
@@ -37,28 +37,25 @@ public:
 
     // Updates current saved local and global coordinates based on given encoder readings (corresponding
     // to left and right wheel) and given heading
-    void update(float leftValue, float rightValue, float angleValue) {
+    void update(float leftValue, float rightValue, float angleValue, bool updatePosition = true) {
         float delta_left_radians = ((leftValue - lastLPos) / COUNTS_PER_REV) * 2 * PI; 
         float delta_right_radians = ((rightValue - lastRPos) / COUNTS_PER_REV) * 2 * PI; 
 
-        // Serial.print("Left encoder value: ");
-        // Serial.println(leftValue);
-        // Serial.print("Right encoder value: ");
-        // Serial.println(rightValue);
-
         float delta_s = (R * delta_left_radians) / 2 + (R * delta_right_radians) / 2;
-
-        // Calculating forward kinematics (x and y pos)
-        x += delta_s * cos(localH);
-        globalX += delta_s * cos(h);
-        y += delta_s * sin(localH);
-        globalY += delta_s * sin(h);
-
-        // Calculating forward kinematics (heading)
-        float localHTrue = (angleValue * PI / 180) - localHZeroRef;
-        localH = atan2(sin(localHTrue), cos(localHTrue)); // wraps around to be within -pi to pi
-        h = (angleValue * PI / 180);
+        float localHTrue = (angleValue * PI / 180.0f) - localHZeroRef;
+        localH = atan2(sin(localHTrue), cos(localHTrue));
+        h = angleValue * PI / 180.0f;
         h = atan2(sin(h), cos(h));
+        
+        if (updatePosition)
+        // Calculating forward kinematics (x and y pos)
+        if (updatePosition) {
+            x += delta_s * cos(localH);
+            y += delta_s * sin(localH);
+
+            globalX += delta_s * cos(h);
+            globalY += delta_s * sin(h);
+        }
 
         lastLPos = leftValue;
         lastRPos = rightValue;
