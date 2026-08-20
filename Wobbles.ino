@@ -54,18 +54,6 @@
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 // PLEASE TUNE THESE PID VALUES!!!!!
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-// // PID values for small heading adjustment
-// #define KP_H            5
-// #define KI_H            0  
-// #define KD_H            0.5
-// // PID values for forward speed control
-// #define KP_V            84
-// #define KI_V            2  
-// #define KD_V            8
-// // PID values for turning speed control
-// #define KP_W            30
-// #define KI_W            0  
-// #define KD_W            1
 
 
 // PID values for small heading adjustment
@@ -125,7 +113,7 @@
 #define KP_LIDAR           0.8f    // PWM per mm of distance error (tune)
 #define MIN_MOVE_PWM       40      // min PWM 
 #define BASE_PWM     55       
-#define MAX_LIDAR_ADJUSTMENT 5
+#define MAX_LIDAR_ADJUSTMENT 8
 #define LIDAR_MIN_VALID_MM     20.0f
 #define LIDAR_MAX_VALID_MM     200.0f
 #define LIDAR_DEADBAND_MM      3.0f
@@ -310,7 +298,7 @@ float lidarCorrections() {
         error = desired_side_distance - right_distance;
     }
 
-    if (fabs(error) < 4.0f) {
+    if (fabs(error) < 5.0f) {
         return 0.0f;
     }
 
@@ -382,7 +370,7 @@ void driveStraight(float distance) {
             rightPWM += adjustment_speed;
         }
    
-    if (fabs(curr_h) < 2.0f) {
+    if (fabs(curr_h) < 3.0f) {
         if (millis() - last_lidar_update >= 30) {
             last_lidar_update = millis();
             lidar_adj = lidarCorrections();
@@ -403,7 +391,7 @@ void driveStraight(float distance) {
         rightPWM = constrain(rightPWM, -MAX_MOTOR_PWM, MAX_MOTOR_PWM);
 
 
-        if (fabs(distance_error) <= TOLERANCE_FORWARD) {
+        if (distance_error <= TOLERANCE_FORWARD) {
             motorL.stop();
             motorR.stop();
             if (settle_start == 0) {
@@ -629,9 +617,16 @@ void movementChain(const char *commands, const ContinuousSection *sections, int 
             }
             turn(desiredHeading, true);
             driveStraight(CELL_LENGTH);
+            mpu.update();
+            MovementControl.update( encL.getCount(), encR.getCount(), mpu.getAngleZ());
 
-            // Square back up after the straight
-            turn(desiredHeading, true);
+            float straightHeadingError = MovementControl.getLocalHDeg();
+
+            // Undo the heading error from the straight
+            if (fabs(straightHeadingError) > TOLERANCE_HEADING) {
+                turn(-straightHeadingError, false);
+            }
+
             MovementControl.setCellX(targetCellX);
             MovementControl.setCellY(targetCellY);
         } else if (commands[i] == 'l') {
@@ -782,8 +777,8 @@ void setup() {
     delay(START_DELAY);
 
     //const char *commands = "flflflflflflflflflflflflrrr";
-    // const char *commands = "frffflfflfrfrflflfrflfclffrflf";
-    const char *commands = "fffff";
+    const char *commands = "frffflfflfrfrflflfrflfclffrflf";
+    // const char *commands = "fffff";
 
     movementChain(commands, continuousSections, continuousSectionCount);
 
