@@ -65,23 +65,23 @@
 #define KI_V            2  
 #define KD_V            8
 // PID values for turning speed control
-#define KP_W            25
+#define KP_W            30
 #define KI_W            0  
 #define KD_W            1
 
 // Tolerances, maximums and minimums
 #define TOLERANCE_FORWARD    10     // tolerance (mm)
 #define TOLERANCE_SIDEWAYS   5      // tolerance (mm)
-#define TOLERANCE_TURNING    2.0f      // tolerance (degrees)
+#define TOLERANCE_TURNING    1.0f      // tolerance (degrees)
 #define TOLERANCE_FRONT_LIDAR 30
-#define SETTLE_MS     50    // must stay within tolerance this long to finish
+#define SETTLE_MS     200    // must stay within tolerance this long to finish
 #define MOVE_TIMEOUT  8000   // give up on a move after this many ms (safety)
 #define TURN_TIMEOUT  4000   // give up on a move after this many ms (safety)
 #define START_DELAY   2000   // pause after power-on so you can place + step back
 #define MIN_PWM 20
 #define MAX_PWM 255
-#define MIN_TURN_PWM 10
-#define MAX_TURN_PWM 80
+#define MIN_TURN_PWM '10'
+#define MAX_TURN_PWM 75
 
 #define MAX_BASE_PWM        90
 #define MAX_MOTOR_PWM       120
@@ -118,7 +118,7 @@
 // A wall counts as "there" if the lidar reads closer than this (mm).
 // Cell is 180 mm wide, so ~100 is a safe midpoint - TUNE on the real maze.
 #define WALL_THRESHOLD_MM 100
-#define FORNT_WALL_THRESHOLD_MM 45
+#define FRONT_WALL_THRESHOLD_MM 45
 
 
 // Maze start and end points (given)
@@ -300,6 +300,9 @@ void driveStraight(float distance) {
     bool at_destination = false;
     uint32_t move_start = millis();
     uint32_t settle_start = 0;
+    uint32_t last_lidar_update = 0;
+    float lidar_adj = 0;
+    uint8_t front_distance = 255;
 
     ControllerH.zeroAndSetTarget(0, 0); // Target set as zero so that heading adjustment controller always tries to adjust back to correct heading
     ControllerV.zeroAndSetTarget(0, distance);
@@ -310,12 +313,7 @@ void driveStraight(float distance) {
         mpu.update();
         long left_count = encL.getCount();
         long right_count = encR.getCount();
-        uint8_t front_distance = lidars.readFrontMM();
-        if (!lidars.timedOutFront() && front_distance < FORNT_WALL_THRESHOLD_MM) {
-            motorL.stop();
-            motorR.stop();
-            break;
-        }
+
         if (millis() - move_start > MOVE_TIMEOUT) {
             motorL.stop();
             motorR.stop();
@@ -341,7 +339,7 @@ void driveStraight(float distance) {
         float distance_error = distance - curr_x;
 
         const float STOP_TOLERANCE = 8.0f;      
-        const float REVERSE_THRESHOLD = 30.0f;   
+        const float REVERSE_THRESHOLD = 60.0f;   
 
         if (abs(distance_error) <= STOP_TOLERANCE) {
             base_speed = 0;
@@ -394,7 +392,18 @@ void driveStraight(float distance) {
             leftPWM  = base_speed - adjustment_speed;
             rightPWM = base_speed + adjustment_speed;
         }
-        float lidar_adj = lidarCorrections();
+        if (millis() - last_lidar_update >= 30) {
+            last_lidar_update = millis();
+
+            front_distance = lidars.readFrontMM();
+            lidar_adj = lidarCorrections();
+        }
+        if (front_distance < FRONT_WALL_THRESHOLD_MM) {
+            motorL.stop();
+            motorR.stop();
+            at_destination = true;
+            break;
+        }
         leftPWM  -= lidar_adj;
         rightPWM += lidar_adj;
         leftPWM = constrain(leftPWM, -MAX_MOTOR_PWM, MAX_MOTOR_PWM);
@@ -423,44 +432,38 @@ void driveStraight(float distance) {
     MovementControl.update(encL.getCount(), encR.getCount(), mpu.getAngleZ());
 }
 
+float wrapAngle(float angle) {
+    while (angle > 180.0f) { 
+        angle -= 360.0f;
+    }
+    while (angle < -180.0f) {
+        angle += 360.0f;
+    }
+    return angle;
+}
+
 // turn to a target (local or global) heading (in degrees)
 void turn(float heading, bool global) {
     mpu.update();
     MovementControl.update(encL.getCount(), encR.getCount(), mpu.getAngleZ());
     float current_global_H = MovementControl.getHDeg();
-    uint32_t move_start = millis();
+    float target_turns;    
+    if (global) {
+        target_turns = wrapAngle(heading - current_global_H);
+    } else {
+        target_turns = wrapAngle(heading);
+    }
 
+    uint32_t move_start = millis();
     encL.reset();
     encR.reset();
 
-
-    float target_turns;
-    
-    if (global) {
-        target_turns = heading - current_global_H;
-    } else {
-        target_turns = heading;
-    }
-
-    //wrapping heading
-    while (target_turns > 180) { 
-        target_turns -= 360;
-    }
-    while (target_turns < -180) {
-        target_turns += 360;
-    };
-
     MovementControl.zero(); // Same as the function for moving forward, sets local origin at it's current pos
-   
+    ControllerW.zeroAndSetTarget(0, target_turns);
     bool at_destination = false;
 
-    ControllerW.zeroAndSetTarget(0, target_turns);
-
-    // Serial.print("turn start x is ");
-    // Serial.println(MovementControl.getGlobalX());
-    // Serial.print("turn start y is ");
-    // Serial.println(MovementControl.getGlobalY());
     uint32_t settle_start = 0;
+    bool settling = false;
 
     while (!at_destination) {
         mpu.update();
@@ -469,37 +472,36 @@ void turn(float heading, bool global) {
             motorR.stop();
             break;
         }
+
         MovementControl.update(encL.getCount(), encR.getCount(), mpu.getAngleZ());
         float local_heading = MovementControl.getLocalHDeg();
         float speed = ControllerW.compute(local_heading);
+        float error = fabs(ControllerW.getError());
 
-        // Serial.print("Error turning is: ");
-
-        if (abs(ControllerW.getError()) <= TOLERANCE_TURNING) {
+        if (error <= TOLERANCE_TURNING) {
             motorL.stop();
-            motorR.stop();
+            motorR.stop(); 
             if (settle_start == 0) {
                 settle_start = millis();
-            } 
-            if (millis() - settle_start >= SETTLE_MS) {
-                at_destination = true;
             }
-        } else {
+            if ( millis() - settle_start >= SETTLE_MS) {
+                at_destination = true;
+            }             
+        }
+        else {
             settle_start = 0;
-            speed = clamp(speed, MIN_TURN_PWM, MAX_TURN_PWM);
-            float error = fabs(ControllerW.getError());
+            speed = clamp(speed,MIN_TURN_PWM, MAX_TURN_PWM);
             if (error < 15.0f) {
-                speed = constrain(speed, -40, 40);
+                speed = constrain(speed, -35, 35);
             }
 
             if (error < 5.0f) {
-                speed = constrain(speed, -20, 20);
+                speed = constrain(speed, -15, 15);
             }
             motorL.setPWM(-speed);
             motorR.setPWM(speed);
         }
-        // at_destination = (speed == 0);
-    }
+    } 
     motorL.stop();
     motorR.stop();
 }
@@ -562,6 +564,7 @@ void movementChain(const char *commands) {
     int i = 0;
 
     updateMapAndDisplay();   // record + show the starting cell
+    float desiredHeading = MovementControl.getHDeg();
 
     while (i < (int)strlen(commands)) {
         // updateMapAndDisplay();
@@ -602,8 +605,12 @@ void movementChain(const char *commands) {
             } else if (MovementControl.getCurrFacing() == RIGHT) {
                 MovementControl.setCurrFacing(FORWARD);
             }
-            
-            turn(90, false);
+            desiredHeading += 90.0f;
+            while (desiredHeading > 180.0f)
+                desiredHeading -= 360.0f;
+
+            turn(desiredHeading, true);            
+
         } else if (commands[i] == 'r') {
             // Turning right
             DBGLN(F("Turning right!"));
@@ -617,8 +624,11 @@ void movementChain(const char *commands) {
             } else if (MovementControl.getCurrFacing() == LEFT) {
                 MovementControl.setCurrFacing(FORWARD);
             }
+            desiredHeading -= 90.0f;
+            while (desiredHeading < -180.0f)
+                desiredHeading += 360.0f;
 
-            turn(-90, false);
+            turn(desiredHeading, true);   
         }
         updateMapAndDisplay();   // refresh map + % after every completed action
         i++;
@@ -702,7 +712,7 @@ void setup() {
     delay(START_DELAY);
 
     //const char *commands = "flflflflflflflflflflflflrrr";
-    const char *commands = "frfrfrfr";
+    const char *commands = "rlrrll";
     movementChain(commands);
 
     // leave the finished map + % on screen for the demonstrator
