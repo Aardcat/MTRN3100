@@ -47,8 +47,6 @@ public:
         h = angleValue * PI / 180.0f;
         h = atan2(sin(h), cos(h));
         
-        if (updatePosition)
-        // Calculating forward kinematics (x and y pos)
         if (updatePosition) {
             x += delta_s * cos(localH);
             y += delta_s * sin(localH);
