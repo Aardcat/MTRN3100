@@ -54,11 +54,24 @@
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 // PLEASE TUNE THESE PID VALUES!!!!!
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+// // PID values for small heading adjustment
+// #define KP_H            5
+// #define KI_H            0  
+// #define KD_H            0.5
+// // PID values for forward speed control
+// #define KP_V            84
+// #define KI_V            2  
+// #define KD_V            8
+// // PID values for turning speed control
+// #define KP_W            30
+// #define KI_W            0  
+// #define KD_W            1
+
 
 // PID values for small heading adjustment
-#define KP_H            5
+#define KP_H            3.0
 #define KI_H            0  
-#define KD_H            0.5
+#define KD_H            1.0
 // PID values for forward speed control
 #define KP_V            84
 #define KI_V            2  
@@ -72,7 +85,7 @@
 #define TOLERANCE_FORWARD    10     // tolerance (mm)
 #define TOLERANCE_SIDEWAYS   5      // tolerance (mm)
 #define TOLERANCE_TURNING    1.0f      // tolerance (degrees)
-#define TOLERANCE_HEADING 0.5f
+#define TOLERANCE_HEADING 0.8f
 #define TOLERANCE_FRONT_LIDAR 30
 #define STRAIGHT_SETTLE_MS 175
 #define TURN_SETTLE_MS     200    // must stay within tolerance this long to finish
@@ -86,7 +99,7 @@
 
 #define MAX_BASE_PWM        90
 #define MAX_MOTOR_PWM       120
-#define MAX_ADJUSTMENT_PWM  5
+#define MAX_ADJUSTMENT_PWM  4
 
 // Constants for maze
 #define FORWARD 0
@@ -112,7 +125,7 @@
 #define KP_LIDAR           0.8f    // PWM per mm of distance error (tune)
 #define MIN_MOVE_PWM       40      // min PWM 
 #define BASE_PWM     55       
-#define MAX_LIDAR_ADJUSTMENT 15
+#define MAX_LIDAR_ADJUSTMENT 5
 #define LIDAR_MIN_VALID_MM     20.0f
 #define LIDAR_MAX_VALID_MM     200.0f
 #define LIDAR_DEADBAND_MM      3.0f
@@ -315,30 +328,22 @@ float lidarCorrections() {
 void driveStraight(float distance) {
     encL.reset();
     encR.reset();
-    MovementControl.zero(); // Sets current position and heading as the origin and constructs a set of
-                            // local coordinates based on this position
+    MovementControl.zero();
     bool at_destination = false;
     uint32_t move_start = millis();
     uint32_t settle_start = 0;
     uint32_t last_lidar_update = 0;
-    float lidar_adj = 0;
+    float lidar_adj = 0.0f;
     uint8_t front_distance = 255;
 
     ControllerH.zeroAndSetTarget(0, 0); // Target set as zero so that heading adjustment controller always tries to adjust back to correct heading
     ControllerV.zeroAndSetTarget(0, distance);
 
-    // delay(150);
-    
     while (!at_destination) {
         mpu.update();
         long left_count = encL.getCount();
         long right_count = encR.getCount();
 
-        if (millis() - move_start > MOVE_TIMEOUT) {
-            motorL.stop();
-            motorR.stop();
-            break;
-        }
         MovementControl.update(left_count, right_count, mpu.getAngleZ());
 
         // Updates local coordinates
@@ -346,80 +351,46 @@ void driveStraight(float distance) {
         float curr_y = MovementControl.getY();
         float curr_h = MovementControl.getLocalHDeg();
         
-        float base_speed = clamp(ControllerV.compute(curr_x), MIN_PWM, MAX_BASE_PWM);
         float distance_error = distance - curr_x;
+        //timeout for moves
+        if (millis() - move_start > MOVE_TIMEOUT) {
+            motorL.stop();
+            motorR.stop();
+            break;
+        }
 
-        const float REVERSE_THRESHOLD = 60.0f;   
 
-        // if (fabs(distance_error) <= TOLERANCE_FORWARD) {
-        //     base_speed = 0;
-        // }
-        // else if (distance_error > 0) {
-        //     base_speed = fabs(base_speed);
-        // }
-        // else {
-        //     if (fabs(distance_error) > REVERSE_THRESHOLD) {
-        //         base_speed = -fabs(base_speed);
-        //     }
-        //     else {
-        //         base_speed = 0;
-        //     }
-        // }
-
-        float adjustment_speed = 0; // default (L/R) adjustment speed should be zero
+        float adjustment_speed = 0.0f; // default (L/R) adjustment speed should be zero
+        float base_speed = clamp(ControllerV.compute(curr_x), MIN_PWM, MAX_BASE_PWM);
 
         float leftPWM = base_speed;
         float rightPWM = base_speed;
 
-        // if (curr_y > TOLERANCE_SIDEWAYS) {
-        //     adjustment_speed = fabs(ControllerH.compute(curr_y));
-        //     adjustment_speed = constrain(adjustment_speed, 0, MAX_ADJUSTMENT_PWM);
-
-        //     leftPWM  = base_speed + adjustment_speed;
-        //     rightPWM = base_speed - adjustment_speed;
-        // }
-
-        // else if (curr_y < -TOLERANCE_SIDEWAYS) {
-        //     adjustment_speed = fabs(ControllerH.compute(curr_y));
-        //     adjustment_speed = constrain(adjustment_speed, 0, MAX_ADJUSTMENT_PWM);
-
-        //     leftPWM  = base_speed - adjustment_speed;
-        //     rightPWM = base_speed + adjustment_speed;
-        // }
-        // float max_heading_adjustment = MAX_ADJUSTMENT_PWM;
         if (fabs(curr_h) > TOLERANCE_HEADING) {
             adjustment_speed = fabs(ControllerH.compute(curr_h));
-            float max_heading_adjustment = MAX_ADJUSTMENT_PWM;
-            if (fabs(base_speed) < 40.0f) {
-                max_heading_adjustment = 2.0f;
-            }
-            adjustment_speed = constrain(adjustment_speed, 0, max_heading_adjustment);
-            if (curr_h > TOLERANCE_HEADING) {
-                leftPWM  += adjustment_speed;
-                rightPWM -= adjustment_speed;
-            }
-            else if (curr_h < -TOLERANCE_HEADING) {
-                leftPWM  -= adjustment_speed;
-                rightPWM += adjustment_speed;
-            }
+            // if (fabs(base_speed) < 40.0f) {
+            //     max_heading_adjustment = 2.0f;
+            // }
+            adjustment_speed = constrain(adjustment_speed, 0, MAX_ADJUSTMENT_PWM);
+        } 
+        if (curr_h > TOLERANCE_HEADING) {
+            leftPWM  += adjustment_speed;
+            rightPWM -= adjustment_speed;
         }
-
-        // else if (curr_h < -TOLERANCE_HEADING) {
-        //     adjustment_speed = fabs(ControllerH.compute(curr_h));
-        //     float max_heading_adjustment = MAX_ADJUSTMENT_PWM;
-        //     if (fabs(base_speed) < 40.0f) {
-        //         max_heading_adjustment = 2.0f;
-        //     }
-        //     adjustment_speed = constrain(adjustment_speed, 0, max_heading_adjustment);
-
-        //     leftPWM  = base_speed - adjustment_speed;
-        //     rightPWM = base_speed + adjustment_speed;
-        // }
+        else if (curr_h < -TOLERANCE_HEADING) {
+            leftPWM  -= adjustment_speed;
+            rightPWM += adjustment_speed;
+        }
+   
+    if (fabs(curr_h) < 2.0f) {
         if (millis() - last_lidar_update >= 30) {
             last_lidar_update = millis();
-            // front_distance = lidars.readFrontMM();
             lidar_adj = lidarCorrections();
+            lidar_adj = constrain( lidar_adj, -MAX_LIDAR_ADJUSTMENT, MAX_LIDAR_ADJUSTMENT);
         }
+    } else {
+        lidar_adj = 0.0f;
+    }
         // if (front_distance < FRONT_WALL_THRESHOLD_MM) {
         //     motorL.stop();
         //     motorR.stop();
@@ -430,27 +401,28 @@ void driveStraight(float distance) {
         rightPWM += lidar_adj;
         leftPWM = constrain(leftPWM, -MAX_MOTOR_PWM, MAX_MOTOR_PWM);
         rightPWM = constrain(rightPWM, -MAX_MOTOR_PWM, MAX_MOTOR_PWM);
+
+
         if (fabs(distance_error) <= TOLERANCE_FORWARD) {
             motorL.stop();
             motorR.stop();
-
             if (settle_start == 0) {
                 settle_start = millis();
             } 
             if (millis() - settle_start >= STRAIGHT_SETTLE_MS) {
                 at_destination = true;
-            } 
-        }   else {
-                settle_start = 0;
-                motorL.setPWM(leftPWM);
-                motorR.setPWM(rightPWM);
             }
+        } else {
+            settle_start = 0;
+            motorL.setPWM(leftPWM);
+            motorR.setPWM(rightPWM);
+        }
     }
     
     motorL.stop();
     motorR.stop();    
     mpu.update();
-    MovementControl.update(encL.getCount(), encR.getCount(), mpu.getAngleZ(), true);
+    MovementControl.update(encL.getCount(), encR.getCount(), mpu.getAngleZ());
 }
 
 float wrapAngle(float angle) {
@@ -810,13 +782,9 @@ void setup() {
     delay(START_DELAY);
 
     //const char *commands = "flflflflflflflflflflflflrrr";
-    const char *commands = "frffflfflfrfrflflfrflfclffrflf";
-    // const char *commands = "frfrfrfrflflflfl";
+    // const char *commands = "frffflfflfrfrflflfrflfclffrflf";
+    const char *commands = "fffff";
 
-// driveToGlobalCoordinates(0, 0);
-// driveToGlobalCoordinates(-299, -623);
-// driveToGlobalCoordinates(-580, -677);
-// driveToGlobalCoordinates(-810, -810);
     movementChain(commands, continuousSections, continuousSectionCount);
 
     // leave the finished map + % on screen for the demonstrator
