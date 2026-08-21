@@ -275,14 +275,41 @@ float clamp(float value, float min, float max) {
         return 0;
     }
 }
-
 float lidarCorrections() {
 
-    float left_distance  = filterL.update(lidars.readLeftMM());
-    float right_distance = filterR.update(lidars.readRightMM());
+    float left_raw  = lidars.readLeftMM();
+    float right_raw = lidars.readRightMM();
 
-    bool isLeftWall  = left_distance < WALL_THRESHOLD_MM;
-    bool isRightWall = right_distance < WALL_THRESHOLD_MM;
+    bool validLeft =
+        !lidars.timedOutLeft() &&
+        left_raw >= 20 &&
+        left_raw <= 200;
+
+    bool validRight =
+        !lidars.timedOutRight() &&
+        right_raw >= 20 &&
+        right_raw <= 200;
+
+    // No usable wall = NO correction
+    if (!validLeft && !validRight) {
+        return 0.0f;
+    }
+
+    float left_distance  = validLeft  ? filterL.update(left_raw)   : 255.0f;
+    float right_distance = validRight ? filterR.update(right_raw) : 255.0f;
+
+    bool isLeftWall =
+        validLeft &&
+        left_distance < WALL_THRESHOLD_MM;
+
+    bool isRightWall =
+        validRight &&
+        right_distance < WALL_THRESHOLD_MM;
+
+    // Open space
+    if (!isLeftWall && !isRightWall) {
+        return 0.0f;
+    }
 
     float error = 0.0f;
 
@@ -290,26 +317,23 @@ float lidarCorrections() {
         error = left_distance - right_distance;
     }
     else if (isLeftWall) {
-        float desired_side_distance = 70.0f;
-        error = left_distance - desired_side_distance;
+        error = left_distance - 70.0f;
     }
     else if (isRightWall) {
-        float desired_side_distance = 70.0f;
-        error = desired_side_distance - right_distance;
+        error = 70.0f - right_distance;
     }
 
     if (fabs(error) < 5.0f) {
         return 0.0f;
     }
 
-    float corr = error * KP_LIDAR;
-
     return constrain(
-        corr,
+        error * KP_LIDAR,
         -MAX_LIDAR_ADJUSTMENT,
         MAX_LIDAR_ADJUSTMENT
     );
 }
+
 
 // given a target distance in mm, drive there in a straight line while not deviating from 
 // straight line track
@@ -369,16 +393,33 @@ void driveStraight(float distance) {
             leftPWM  -= adjustment_speed;
             rightPWM += adjustment_speed;
         }
-   
-    if (fabs(curr_h) < 3.0f) {
+        // if (millis() - last_lidar_update >= 30) {
+        //     last_lidar_update = millis();
+
+        //     lidar_adj = lidarCorrections();
+
+        //     lidar_adj = constrain(
+        //         lidar_adj,
+        //         -MAX_LIDAR_ADJUSTMENT,
+        //         MAX_LIDAR_ADJUSTMENT
+        //     );
+        // }
         if (millis() - last_lidar_update >= 30) {
-            last_lidar_update = millis();
-            lidar_adj = lidarCorrections();
-            lidar_adj = constrain( lidar_adj, -MAX_LIDAR_ADJUSTMENT, MAX_LIDAR_ADJUSTMENT);
-        }
-    } else {
-        lidar_adj = 0.0f;
-    }
+    last_lidar_update = millis();
+    lidar_adj = lidarCorrections();
+}
+
+    // if (fabs(curr_h) < 3.0f) {
+    //     if (millis() - last_lidar_update >= 30) {
+    //         last_lidar_update = millis();
+    //         lidar_adj = lidarCorrections();
+    //         lidar_adj = constrain( lidar_adj, -MAX_LIDAR_ADJUSTMENT, MAX_LIDAR_ADJUSTMENT);
+    //     }
+    // } 
+    
+    // else {
+    //     lidar_adj = 0.0f;
+    // }
         // if (front_distance < FRONT_WALL_THRESHOLD_MM) {
         //     motorL.stop();
         //     motorR.stop();
@@ -458,7 +499,10 @@ void turn(float heading, bool global) {
         MovementControl.update(encL.getCount(), encR.getCount(), mpu.getAngleZ());
         float local_heading = MovementControl.getLocalHDeg();
         float speed = ControllerW.compute(local_heading);
-        float error = fabs(ControllerW.getError());
+        float current_error =
+            wrapAngle(target_turns - local_heading);
+
+        float error = fabs(current_error);
 
         float max_expected_turn = fabs(target_turns) + 30.0f;
 
@@ -467,8 +511,8 @@ void turn(float heading, bool global) {
             motorR.stop();
             break;
         }
-    float current_error =
-            wrapAngle(target_turns - local_heading);
+    // float current_error =
+    //         wrapAngle(target_turns - local_heading);
 
         if (fabs(current_error - previous_error) > 180.0f) {
             motorL.stop();
@@ -776,8 +820,8 @@ void setup() {
 
     delay(START_DELAY);
 
-    //const char *commands = "flflflflflflflflflflflflrrr";
-    const char *commands = "frffflfflfrfrflflfrflfclffrflf";
+    const char *commands = "ffrflfrfflfrfffrfrfflflfrfrffrflflf";
+    // const char *commands = "frffflfflfrfrflflfrflfclffrflf";
     // const char *commands = "fffff";
 
     movementChain(commands, continuousSections, continuousSectionCount);
